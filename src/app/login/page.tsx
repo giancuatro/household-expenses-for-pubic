@@ -16,9 +16,10 @@ export default function LoginPage() {
 function LoginForm() {
   const search = useSearchParams();
   const next = search?.get("next") || "/";
+  const callbackError = search?.get("error") || null;
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(callbackError);
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {

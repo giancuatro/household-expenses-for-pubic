@@ -1,43 +1,65 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { getSupabaseServer, getSupabaseAdmin } from "@/lib/supabase/server";
 
 /**
  * Magic-link / OAuth callback handler.
  *
- * Supabase redirects here with `?code=...` after the user clicks the email
- * link or completes OAuth. We:
- *   1. Exchange the code for a session (sets the auth cookies).
- *   2. If query param `household_name` is present (signup flow) AND the user
- *      isn't already a member of any household, create the household and
- *      add them as the owner.
- *   3. If query param `invite` is present, accept the invitation.
- *   4. Redirect to `?next=` (default "/").
+ * Supabase magic links can land here with one of two query patterns,
+ * depending on the auth flow Supabase chose:
+ *
+ *  1. PKCE flow      → `?code=<jwt>`
+ *  2. Token-hash flow → `?token_hash=<hash>&type=<email|magiclink|invite|...>`
+ *
+ * We accept both. After establishing a session, we:
+ *   - Bootstrap a new household if `?household_name=` is present (signup flow)
+ *     and the user isn't a member of any household yet.
+ *   - Accept an invitation if `?invite=<token>` is present.
+ *   - Redirect to `?next=` (default "/").
+ *
+ * If neither `code` nor `token_hash` is present, we redirect to /login with
+ * an error so the user sees what went wrong instead of a blank screen.
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
+  const tokenHash = url.searchParams.get("token_hash");
+  const otpType = url.searchParams.get("type") as EmailOtpType | null;
   const next = url.searchParams.get("next") || "/";
   const householdName = url.searchParams.get("household_name");
   const displayName = url.searchParams.get("display_name");
   const inviteToken = url.searchParams.get("invite");
 
-  if (!code) {
-    return NextResponse.redirect(new URL("/login?error=missing_code", req.url));
-  }
-
   const sb = getSupabaseServer();
-  const { data, error } = await sb.auth.exchangeCodeForSession(code);
-  if (error || !data?.user) {
-    return NextResponse.redirect(
-      new URL(`/login?error=${encodeURIComponent(error?.message ?? "exchange_failed")}`, req.url),
-    );
+
+  // ---- 1. Establish session (PKCE OR token-hash) -------------------------
+  let user: { id: string; email: string | null } | null = null;
+  let exchangeError: string | null = null;
+
+  if (code) {
+    const { data, error } = await sb.auth.exchangeCodeForSession(code);
+    if (error || !data?.user) {
+      exchangeError = error?.message ?? "exchange_failed";
+    } else {
+      user = { id: data.user.id, email: data.user.email ?? null };
+    }
+  } else if (tokenHash && otpType) {
+    const { data, error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: otpType });
+    if (error || !data?.user) {
+      exchangeError = error?.message ?? "verify_failed";
+    } else {
+      user = { id: data.user.id, email: data.user.email ?? null };
+    }
+  } else {
+    exchangeError = "missing_code_or_token_hash";
   }
 
-  const userId = data.user.id;
-  const userEmail = data.user.email;
+  if (!user) {
+    const errParam = encodeURIComponent(exchangeError ?? "auth_failed");
+    return NextResponse.redirect(new URL(`/login?error=${errParam}`, req.url));
+  }
 
-  // Use admin client to upsert household_members (RLS would also allow this,
-  // but admin avoids race conditions during first-ever signup).
+  // ---- 2. Side-effects under admin (bypass RLS for bootstrap) -----------
   const admin = getSupabaseAdmin();
 
   // Accept invitation if token provided
@@ -51,12 +73,12 @@ export async function GET(req: NextRequest) {
       invite &&
       !invite.accepted_at &&
       new Date(invite.expires_at as string) > new Date() &&
-      (!userEmail || (invite.email as string).toLowerCase() === userEmail.toLowerCase())
+      (!user.email || (invite.email as string).toLowerCase() === user.email.toLowerCase())
     ) {
       await admin.from("household_members").upsert(
         {
           household_id: invite.household_id,
-          auth_user_id: userId,
+          auth_user_id: user.id,
           role: invite.role,
           display_name: displayName ?? null,
         },
@@ -75,7 +97,7 @@ export async function GET(req: NextRequest) {
     const { data: existing } = await admin
       .from("household_members")
       .select("household_id")
-      .eq("auth_user_id", userId)
+      .eq("auth_user_id", user.id)
       .limit(1);
     if ((existing ?? []).length === 0) {
       const { data: hh, error: hhErr } = await admin
@@ -86,11 +108,10 @@ export async function GET(req: NextRequest) {
       if (!hhErr && hh) {
         await admin.from("household_members").insert({
           household_id: hh.id,
-          auth_user_id: userId,
+          auth_user_id: user.id,
           role: "owner",
           display_name: displayName ?? null,
         });
-        // Seed default categories for a brand-new household.
         const seed = [
           ["食費", "shared", 40000, 10],
           ["外食費", "shared", 25000, 20],
@@ -111,11 +132,10 @@ export async function GET(req: NextRequest) {
             sort_order,
           })),
         );
-        // Seed payer row matching the auth user so transactions can attribute.
         await admin.from("users").insert({
           household_id: hh.id,
-          name: displayName || (userEmail ? userEmail.split("@")[0] : "メンバー"),
-          auth_user_id: userId,
+          name: displayName || (user.email ? user.email.split("@")[0] : "メンバー"),
+          auth_user_id: user.id,
         });
       }
     }
