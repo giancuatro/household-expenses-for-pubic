@@ -38,7 +38,7 @@ import {
   type MemberRow,
   type InvitationRow,
 } from "../actions/settings";
-import { createAccount, deleteAccount, recalculateHoldingsFromTrades } from "../actions/investment";
+import { createAccount, deleteAccount } from "../actions/investment";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import type { HouseholdMembership } from "@/lib/auth";
 
@@ -197,22 +197,6 @@ export default function SettingsClient({
                   <span className={`chip text-xs shrink-0 ${a.is_active ? "bg-success/15 text-success" : "bg-muted"}`}>
                     {a.is_active ? "有効" : "無効"}
                   </span>
-                  <button
-                    className="btn-ghost text-xs py-1 px-2 shrink-0"
-                    title="売買履歴から保有数量・平均取得単価を再計算します。レガシー DB から移行した直後に実行してください。"
-                    disabled={pending}
-                    onClick={() => {
-                      start(async () => {
-                        try {
-                          await recalculateHoldingsFromTrades(a.id);
-                          setErr(null);
-                          router.refresh();
-                        } catch (e: unknown) {
-                          setErr(e instanceof Error ? e.message : String(e));
-                        }
-                      });
-                    }}
-                  >保有を再計算</button>
                   <button
                     className="btn-danger text-xs py-1 px-2 shrink-0"
                     disabled={pending}

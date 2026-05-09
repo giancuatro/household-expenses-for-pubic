@@ -490,7 +490,14 @@ values ('<our-household-id>', '<your-auth-user-id>', 'owner');
 - 旧プロジェクトの `users / expense_categories / payment_methods / fixed_cost_masters / transactions / investment_accounts / investment_transactions / cash_balance_snapshots` を順番に読み出す
 - すべて新プロジェクトに **`household_id = TARGET_HOUSEHOLD_ID` 付きで再 INSERT**
 - 旧 ID → 新 ID のマッピングを内部で構築し、外部キー（`user_id`, `category_id`, `payment_method_id` 等）を再リンク
-- `investment_holdings` は trade 履歴から再計算可能なのでスキップ → 移行後にアプリの **設定 → 証券口座** タブで各口座の「保有を再計算」ボタンを押す
+- `investment_holdings` は trade 履歴から再計算可能なのでスキップ → 移行後にアプリ上で何かしらの売買アクション（追加・削除）をすると自動で再構築される。即時に再構築したければ、新環境の Supabase SQL Editor で次を実行:
+
+  ```sql
+  -- マイグレーション直後に保有スナップショットを 1 回だけ手動再構築
+  truncate investment_holdings;
+  -- そのあと Settings → 証券口座 で適当な口座の何かを編集すれば
+  -- recalculateHoldingsFromTrades が走って holdings が再生成される。
+  ```
 
 #### 注意
 
