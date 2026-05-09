@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type {
   CategoryRow,
@@ -30,6 +30,13 @@ import {
   renameHousehold,
   inviteMember,
   switchHousehold,
+  changeMemberRole,
+  removeMember,
+  revokeInvitation,
+  listMembers,
+  listInvitations,
+  type MemberRow,
+  type InvitationRow,
 } from "../actions/settings";
 import { createAccount, deleteAccount } from "../actions/investment";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -1345,7 +1352,21 @@ function HouseholdSettings({
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"owner" | "editor" | "viewer">("editor");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [members, setMembers] = useState<MemberRow[] | null>(null);
+  const [invitations, setInvitations] = useState<InvitationRow[] | null>(null);
+  const [copiedTokenId, setCopiedTokenId] = useState<string | null>(null);
   const isOwner = household.role === "owner";
+
+  // Load members + pending invitations on mount + after any mutation
+  const reload = () => {
+    listMembers().then(setMembers).catch((e) => onError(String(e)));
+    listInvitations().then(setInvitations).catch((e) => onError(String(e)));
+  };
+  useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [household.household_id]);
+
+  function buildInviteUrl(token: string): string {
+    return `${window.location.origin}/auth/callback?invite=${token}&next=${encodeURIComponent("/")}`;
+  }
 
   return (
     <section className="card space-y-6">
@@ -1417,6 +1438,149 @@ function HouseholdSettings({
         </div>
       )}
 
+      <div>
+        <h2 className="font-semibold mb-2">現在のメンバー</h2>
+        {members === null ? (
+          <p className="text-xs text-muted-foreground">読込中…</p>
+        ) : members.length === 0 ? (
+          <p className="text-xs text-muted-foreground">メンバーがいません。</p>
+        ) : (
+          <ul className="divide-y divide-border text-sm">
+            {members.map((m) => {
+              const isMe = household.role && memberships.some(
+                (x) => x.household_id === household.household_id && x.role === m.role && x.display_name === m.display_name,
+              );
+              return (
+                <li key={m.auth_user_id} className="py-2 flex items-center gap-2 min-w-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">
+                      {m.display_name || m.email || "メンバー"}
+                      {isMe && <span className="text-xs text-muted-foreground ml-1">（あなた）</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">{m.email ?? "—"}</div>
+                  </div>
+                  {isOwner ? (
+                    <select
+                      className="input text-xs py-1 shrink-0 w-24"
+                      value={m.role}
+                      disabled={pending}
+                      onChange={(e) =>
+                        start(async () => {
+                          onError(null);
+                          try {
+                            await changeMemberRole({
+                              authUserId: m.auth_user_id,
+                              role: e.target.value as "owner" | "editor" | "viewer",
+                            });
+                            reload();
+                          } catch (err: unknown) {
+                            onError(err instanceof Error ? err.message : String(err));
+                            reload();
+                          }
+                        })
+                      }
+                    >
+                      <option value="owner">オーナー</option>
+                      <option value="editor">編集可</option>
+                      <option value="viewer">閲覧のみ</option>
+                    </select>
+                  ) : (
+                    <span className="chip bg-muted text-xs shrink-0">
+                      {m.role === "owner" ? "オーナー" : m.role === "editor" ? "編集可" : "閲覧のみ"}
+                    </span>
+                  )}
+                  {(isOwner || isMe) && (
+                    <button
+                      className="btn-danger text-xs py-1 px-2 shrink-0"
+                      disabled={pending}
+                      onClick={() => {
+                        const msg = isMe
+                          ? "この世帯から退出しますか？（自分のメンバー権限のみ削除されます）"
+                          : `${m.display_name || m.email} を世帯から削除しますか？`;
+                        if (!confirm(msg)) return;
+                        start(async () => {
+                          onError(null);
+                          try {
+                            await removeMember(m.auth_user_id);
+                            if (isMe) {
+                              window.location.href = "/login";
+                            } else {
+                              reload();
+                            }
+                          } catch (err: unknown) {
+                            onError(err instanceof Error ? err.message : String(err));
+                          }
+                        });
+                      }}
+                    >
+                      {isMe ? "退出" : "削除"}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {isOwner && invitations !== null && invitations.length > 0 && (
+        <div>
+          <h2 className="font-semibold mb-2">未承認の招待</h2>
+          <ul className="divide-y divide-border text-sm">
+            {invitations.map((inv) => {
+              const url = buildInviteUrl(inv.token);
+              const expired = new Date(inv.expires_at) < new Date();
+              return (
+                <li key={inv.id} className="py-2 space-y-1 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate">{inv.email}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {inv.role === "owner" ? "オーナー" : inv.role === "editor" ? "編集可" : "閲覧のみ"}
+                        {" · "}
+                        {expired ? (
+                          <span className="text-destructive">期限切れ</span>
+                        ) : (
+                          `期限: ${new Date(inv.expires_at).toLocaleString("ja-JP")}`
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      className="btn-ghost text-xs py-1 px-2 shrink-0"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(url);
+                        setCopiedTokenId(inv.id);
+                        setTimeout(() => setCopiedTokenId((c) => (c === inv.id ? null : c)), 2000);
+                      }}
+                    >
+                      {copiedTokenId === inv.id ? "✓ コピー済" : "リンクコピー"}
+                    </button>
+                    <button
+                      className="btn-danger text-xs py-1 px-2 shrink-0"
+                      disabled={pending}
+                      onClick={() => {
+                        if (!confirm(`${inv.email} の招待を取り消しますか？`)) return;
+                        start(async () => {
+                          onError(null);
+                          try {
+                            await revokeInvitation(inv.id);
+                            reload();
+                          } catch (err: unknown) {
+                            onError(err instanceof Error ? err.message : String(err));
+                          }
+                        });
+                      }}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {isOwner && (
         <div>
           <h2 className="font-semibold mb-2">メンバーを招待</h2>
@@ -1453,9 +1617,9 @@ function HouseholdSettings({
                     email: inviteEmail.trim(),
                     role: inviteRole,
                   });
-                  const url = `${window.location.origin}/auth/callback?invite=${token}&next=${encodeURIComponent("/")}`;
-                  setInviteLink(url);
+                  setInviteLink(buildInviteUrl(token));
                   setInviteEmail("");
+                  reload();
                 } catch (e: unknown) {
                   onError(e instanceof Error ? e.message : String(e));
                 }

@@ -412,12 +412,98 @@ export async function removeMember(authUserId: string) {
     throw new Error("他のメンバーの削除はオーナーのみ可能です。");
   }
   const admin = getSupabaseAdmin();
+
+  // Guard: never let the only owner be removed (would orphan the household).
+  if (authUserId === user.id || household.role === "owner") {
+    const { data: owners } = await admin
+      .from("household_members")
+      .select("auth_user_id")
+      .eq("household_id", household.household_id)
+      .eq("role", "owner");
+    const ownerIds = ((owners ?? []) as { auth_user_id: string }[]).map((o) => o.auth_user_id);
+    if (ownerIds.length === 1 && ownerIds[0] === authUserId) {
+      throw new Error(
+        "唯一のオーナーは削除できません。他のメンバーをオーナーに昇格させてから再実行してください。",
+      );
+    }
+  }
+
   const { error } = await admin
     .from("household_members")
     .delete()
     .eq("household_id", household.household_id)
     .eq("auth_user_id", authUserId);
   if (error) throw new Error(error.message);
+}
+
+const ChangeRoleSchema = z.object({
+  authUserId: z.string().uuid(),
+  role: z.enum(["owner", "editor", "viewer"]),
+});
+
+export async function changeMemberRole(input: z.infer<typeof ChangeRoleSchema>) {
+  const { household } = await requireSession();
+  if (household.role !== "owner") throw new Error("ロール変更はオーナーのみ可能です。");
+  const p = ChangeRoleSchema.parse(input);
+  const admin = getSupabaseAdmin();
+  const { error } = await admin
+    .from("household_members")
+    .update({ role: p.role })
+    .eq("household_id", household.household_id)
+    .eq("auth_user_id", p.authUserId);
+  if (error) throw new Error(error.message);
+}
+
+export interface MemberRow {
+  auth_user_id: string;
+  role: "owner" | "editor" | "viewer";
+  display_name: string | null;
+  email: string | null;
+  joined_at: string;
+}
+
+export async function listMembers(): Promise<MemberRow[]> {
+  const { household } = await requireSession();
+  const admin = getSupabaseAdmin();
+  const { data, error } = await admin
+    .from("household_members")
+    .select("auth_user_id, role, display_name, joined_at")
+    .eq("household_id", household.household_id)
+    .order("joined_at");
+  if (error) throw new Error(error.message);
+
+  const rows = (data ?? []) as Omit<MemberRow, "email">[];
+  // Look up emails one-by-one (Supabase admin API has no bulk-by-id endpoint).
+  // For typical household sizes (1–5 members) this is fine.
+  const out: MemberRow[] = [];
+  for (const r of rows) {
+    const { data: au } = await admin.auth.admin.getUserById(r.auth_user_id);
+    out.push({ ...r, email: au?.user?.email ?? null });
+  }
+  return out;
+}
+
+export interface InvitationRow {
+  id: string;
+  email: string;
+  role: "owner" | "editor" | "viewer";
+  token: string;
+  expires_at: string;
+  accepted_at: string | null;
+  created_at: string;
+}
+
+export async function listInvitations(): Promise<InvitationRow[]> {
+  const { household } = await requireSession();
+  const admin = getSupabaseAdmin();
+  const { data, error } = await admin
+    .from("household_invitations")
+    .select("id, email, role, token, expires_at, accepted_at, created_at")
+    .eq("household_id", household.household_id)
+    .is("accepted_at", null)
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as InvitationRow[];
 }
 
 export async function switchHousehold(householdId: string) {
