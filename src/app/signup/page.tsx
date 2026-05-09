@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { bootstrapHousehold } from "../actions/auth";
@@ -18,7 +17,6 @@ import { bootstrapHousehold } from "../actions/auth";
  *   3. router.replace("/") lands on the home screen.
  */
 export default function SignupPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [householdName, setHouseholdName] = useState("");
@@ -65,8 +63,10 @@ export default function SignupPage() {
         householdName: trimmedHh,
         displayName: displayName.trim() || undefined,
       });
-      router.replace("/");
-      router.refresh();
+      // Use full reload instead of router.replace + router.refresh.
+      // Soft nav in Next.js 14.2.15 has a known replaceState() loop bug
+      // (#65770); a hard nav forces a clean full request lifecycle.
+      window.location.href = "/";
     } catch (err: unknown) {
       setLoading(false);
       setError(err instanceof Error ? err.message : String(err));

@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 
@@ -14,7 +14,6 @@ export default function LoginPage() {
 }
 
 function LoginForm() {
-  const router = useRouter();
   const search = useSearchParams();
   const next = search?.get("next") || "/";
   const callbackError = search?.get("error") || null;
@@ -37,8 +36,9 @@ function LoginForm() {
       setError(signErr.message);
       return;
     }
-    router.replace(next);
-    router.refresh();
+    // Hard nav so the new auth cookies trigger a full SSR pass on the
+    // landing page (avoids #65770 replaceState() loop on Next.js 14.2.15).
+    window.location.href = next;
   }
 
   async function onGoogle() {

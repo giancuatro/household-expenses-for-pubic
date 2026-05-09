@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import { Plus, SlidersHorizontal } from "lucide-react";
@@ -83,19 +83,12 @@ export default function HomeClient({
 }: Props) {
   const router = useRouter();
 
-  // Auto-refresh if the 20-day cycle has rolled over to a new month.
-  // Guarded with a ref so it fires at most once per mount — without this,
-  // any subsequent re-render that remounts this component would trigger
-  // another router.refresh() and we've seen that compound into a
-  // history.replaceState() flood ("more than 100 times per 10 seconds").
-  const refreshedRef = useRef(false);
-  useEffect(() => {
-    if (refreshedRef.current) return;
-    refreshedRef.current = true;
-    const expected = monthKey(new Date());
-    if (expected !== currentMonth) router.refresh();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Cycle-rollover auto-refresh removed: in Next.js 14.2.15 a single
+  // router.refresh() during initial render of a dynamically-rendered page
+  // can trigger an infinite history.replaceState() loop (see vercel/next.js
+  // #65770). The fixed-cost catch-up runs on every server render via
+  // applyFixedCostsForMonth in layout.tsx, so we don't lose anything by
+  // skipping this client-side trigger.
 
   const [userId, setUserId] = useState<string | null>(users[0]?.id ?? null);
   const [amount, setAmount] = useState<string>("");
