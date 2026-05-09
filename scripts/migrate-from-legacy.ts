@@ -60,9 +60,26 @@ import { config as loadEnv } from "dotenv";
 
 loadEnv({ path: ".env.migrate" });
 
+/** Reject placeholder values that look like they came straight from
+ *  `.env.migrate.example`. Cuts off the most common mis-setup: copying the
+ *  template and forgetting to actually fill in the values. */
+const PLACEHOLDER_PATTERNS: Array<{ var: string; pattern: RegExp; hint: string }> = [
+  { var: "LEGACY_SUPABASE_URL", pattern: /YOUR-OLD-PROJECT/i, hint: "https://<旧プロジェクトの ref>.supabase.co を貼る" },
+  { var: "TARGET_SUPABASE_URL", pattern: /YOUR-NEW-PROJECT/i, hint: "https://<新プロジェクトの ref>.supabase.co を貼る" },
+  { var: "LEGACY_SUPABASE_SERVICE_ROLE_KEY", pattern: /^eyJ\.\.\.$/i, hint: "Settings → API の service_role secret を貼る（旧プロジェクト）" },
+  { var: "TARGET_SUPABASE_SERVICE_ROLE_KEY", pattern: /^eyJ\.\.\.$/i, hint: "Settings → API の service_role secret を貼る（新プロジェクト）" },
+  { var: "TARGET_HOUSEHOLD_ID", pattern: /^00000000-0000-0000-0000-000000000000$/i, hint: "SQL: select id, name from households で取得した uuid を貼る" },
+];
+
 function need(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing required env var: ${name}`);
+  if (!v) throw new Error(`環境変数が未設定: ${name}`);
+  const ph = PLACEHOLDER_PATTERNS.find((p) => p.var === name);
+  if (ph && ph.pattern.test(v)) {
+    throw new Error(
+      `環境変数 ${name} が .env.migrate.example のテンプレート値のままです。\n  ${ph.hint}`,
+    );
+  }
   return v;
 }
 
