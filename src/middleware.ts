@@ -61,7 +61,12 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(u);
   }
 
-  if (authed && (pathname === "/login" || pathname === "/signup")) {
+  // Authed user accidentally lands on /login → push them to / (the home
+  // page redirects to /signup if they have no household yet, so the loop
+  // is broken there).
+  // /signup is intentionally *always allowed*: a signed-in user with no
+  // household yet needs to be able to land on /signup to create one.
+  if (authed && pathname === "/login") {
     const u = req.nextUrl.clone();
     u.pathname = "/";
     u.search = "";

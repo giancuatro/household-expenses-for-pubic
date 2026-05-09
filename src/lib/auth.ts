@@ -76,10 +76,19 @@ export const getSession = cache(async (): Promise<SessionContext | null> => {
   return { user, household: active, memberships };
 });
 
-/** Used by Server Components / Actions: redirect to /login if not signed in. */
+/**
+ * Used by Server Components / Actions. Three outcomes:
+ *  - Not signed in → redirect to /login
+ *  - Signed in but no household yet (email-only user, or a half-finished
+ *    previous signup) → redirect to /signup so they can claim/create a
+ *    household. /signup detects authed state and skips email/password.
+ *  - Signed in with at least one household → return the session.
+ */
 export async function requireSession(): Promise<SessionContext> {
+  const user = await getAuthUser();
+  if (!user) redirect("/login");
   const s = await getSession();
-  if (!s) redirect("/login");
+  if (!s) redirect("/signup");
   return s;
 }
 

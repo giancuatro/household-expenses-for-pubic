@@ -1,22 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { bootstrapHousehold } from "../actions/auth";
 
 /**
- * Email + password signup. Flow:
- *   1. supabase.auth.signUp({ email, password })
- *      - With "Confirm email" disabled in Supabase Auth settings, this
- *        returns a session cookie immediately. The user is logged in.
- *      - With "Confirm email" enabled, signUp() returns a user but no
- *        session; we surface a message asking them to click the email link.
- *   2. Server action bootstrapHousehold() creates the household, member,
- *      default categories and payer-label row.
- *   3. router.replace("/") lands on the home screen.
+ * Signup / household-creation page. Two modes:
+ *
+ *  A. Anonymous visitor → full signup
+ *     1. supabase.auth.signUp({ email, password })
+ *        - Confirm email disabled in Supabase: returns a session immediately
+ *        - Confirm email enabled: returns a user but no session, surface a
+ *          "check your email" message
+ *     2. bootstrapHousehold() creates the household + member + categories
+ *     3. Hard-nav to "/"
+ *
+ *  B. Already-authenticated visitor with no household yet (e.g. an email-only
+ *     auth.users row left over from a previous half-finished signup, or a
+ *     user invited via email-only OAuth before any household was created)
+ *     → only ask for household name + display name, skip signUp() entirely.
+ *     This is what breaks the redirect loop where requireSession sends
+ *     authed-but-householdless users to /signup.
  */
 export default function SignupPage() {
+  const [authedUser, setAuthedUser] = useState<{ email: string | null } | null | undefined>(undefined);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [householdName, setHouseholdName] = useState("");
@@ -24,6 +32,14 @@ export default function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [needConfirm, setNeedConfirm] = useState(false);
+
+  // Detect already-authed state on mount so we can hide email/password fields
+  useEffect(() => {
+    const sb = getSupabaseBrowser();
+    sb.auth.getUser().then(({ data }) => {
+      setAuthedUser(data.user ? { email: data.user.email ?? null } : null);
+    });
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,6 +52,23 @@ export default function SignupPage() {
       setLoading(false);
       return;
     }
+
+    // Path B: already authed → straight to bootstrap
+    if (authedUser) {
+      try {
+        await bootstrapHousehold({
+          householdName: trimmedHh,
+          displayName: displayName.trim() || undefined,
+        });
+        window.location.href = "/";
+      } catch (err: unknown) {
+        setLoading(false);
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+
+    // Path A: anonymous → full signup
     if (password.length < 8) {
       setError("パスワードは 8 文字以上にしてください。");
       setLoading(false);
@@ -53,7 +86,6 @@ export default function SignupPage() {
       return;
     }
     if (!data.session) {
-      // Confirm email is enabled — user must verify before logging in.
       setLoading(false);
       setNeedConfirm(true);
       return;
@@ -63,14 +95,22 @@ export default function SignupPage() {
         householdName: trimmedHh,
         displayName: displayName.trim() || undefined,
       });
-      // Use full reload instead of router.replace + router.refresh.
-      // Soft nav in Next.js 14.2.15 has a known replaceState() loop bug
-      // (#65770); a hard nav forces a clean full request lifecycle.
       window.location.href = "/";
     } catch (err: unknown) {
       setLoading(false);
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function onSignOut() {
+    const sb = getSupabaseBrowser();
+    await sb.auth.signOut();
+    window.location.href = "/login";
+  }
+
+  // Don't flash content while we're still resolving auth state
+  if (authedUser === undefined) {
+    return <div className="min-h-[85vh]" />;
   }
 
   return (
@@ -89,7 +129,9 @@ export default function SignupPage() {
           </div>
           <h1 className="text-2xl font-bold tracking-tight">世帯を新規作成</h1>
           <p className="text-sm text-muted-foreground">
-            あなたが最初のメンバーとなり、後から家族や同居人を招待できます。
+            {authedUser
+              ? `${authedUser.email ?? "あなた"} としてログイン中。世帯を作成して開始します。`
+              : "あなたが最初のメンバーとなり、後から家族や同居人を招待できます。"}
           </p>
         </div>
 
@@ -120,29 +162,35 @@ export default function SignupPage() {
                 onChange={(e) => setDisplayName(e.target.value)}
               />
             </label>
-            <label className="block space-y-1">
-              <span className="text-sm font-medium">メールアドレス</span>
-              <input
-                type="email"
-                required
-                className="input"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-sm font-medium">パスワード</span>
-              <input
-                type="password"
-                required
-                minLength={8}
-                className="input"
-                placeholder="8 文字以上"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
+
+            {!authedUser && (
+              <>
+                <label className="block space-y-1">
+                  <span className="text-sm font-medium">メールアドレス</span>
+                  <input
+                    type="email"
+                    required
+                    className="input"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-sm font-medium">パスワード</span>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    className="input"
+                    placeholder="8 文字以上"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </label>
+              </>
+            )}
+
             {error && (
               <p
                 role="alert"
@@ -152,14 +200,23 @@ export default function SignupPage() {
               </p>
             )}
             <button type="submit" className="btn-primary w-full" disabled={loading}>
-              {loading ? "作成中..." : "アカウント作成"}
+              {loading ? "作成中..." : authedUser ? "世帯を作成" : "アカウント作成"}
             </button>
-            <p className="text-xs text-muted-foreground text-center">
-              既にアカウントをお持ちの方は{" "}
-              <Link href="/login" className="text-primary underline">
-                ログイン
-              </Link>
-            </p>
+            {authedUser ? (
+              <p className="text-xs text-muted-foreground text-center">
+                別のアカウントを使う場合は{" "}
+                <button type="button" onClick={onSignOut} className="text-primary underline">
+                  ログアウト
+                </button>
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground text-center">
+                既にアカウントをお持ちの方は{" "}
+                <Link href="/login" className="text-primary underline">
+                  ログイン
+                </Link>
+              </p>
+            )}
           </>
         )}
       </form>
