@@ -419,12 +419,14 @@ Magic Link だけでよければ飛ばしてOK。Google ボタンも使いたい
 
 ## 既存環境からのアップグレード（旧シングルテナント版を使っていた人向け）
 
-旧シングル世帯設計のデータを引き継ぎたい場合:
+### パターン 1: 同じ Supabase プロジェクトでスキーマを引き継ぐ場合
 
-1. 上記の `0010_multi_tenant.sql` → `0011_seed_default_household.sql` を実行すると、既存データが「我が家」という名前の 1 世帯に紐づきます。
-2. `0012_rls.sql` を実行（RLS 有効化）。
-3. アプリで `/signup` から自分のメールでサインアップし、新世帯を作成 ← **ここで `auth.users` に新しい行ができる**
-4. ただし新世帯は空。既存データを引き継ぐには Supabase SQL Editor で次を実行:
+旧シングル世帯設計のデータが **同じ Supabase プロジェクト** に乗っていて、その上にマルチテナント化を被せたい場合:
+
+1. `0010_multi_tenant.sql` → `0011_seed_default_household.sql` を実行 → 既存データが「我が家」という名前の 1 世帯に紐づく
+2. `0012_rls.sql` を実行（RLS 有効化）
+3. アプリで `/signup` から自分のメアドでサインアップし、新世帯を作成
+4. 既存データを引き継ぐには Supabase SQL Editor で次を実行:
 
 ```sql
 -- 1) 既存の「我が家」世帯 ID を確認
@@ -441,8 +443,65 @@ values ('<our-household-id>', '<your-auth-user-id>', 'owner');
 -- delete from households where id = '<the-empty-one-created-by-signup>';
 ```
 
-これで既存の取引・カテゴリ・固定費すべてがあなたのアカウントから見えるようになります。
-配偶者にも同じ手順（`/signup` → SQL で `household_members` に追加）を繰り返せば共有完了。
+### パターン 2: 別の Supabase プロジェクトからデータを移行する場合（推奨）
+
+家族用の旧プロジェクトと OSS 公開用の新プロジェクトを分けている場合（このリポジトリの想定パターン）、提供スクリプトでデータコピー:
+
+#### 前提
+
+- 旧 Supabase プロジェクト（シングルテナント、マイグレーション 0001〜0007 まで適用済み）
+- 新 Supabase プロジェクト（このリポジトリのマイグレーション 0001〜0012 全部適用済み + RLS 有効）
+- 新プロジェクトでサインアップ済み → 移行先世帯が作成されている
+
+#### 手順
+
+1. 新プロジェクトの SQL Editor で移行先 `household_id` を確認:
+   ```sql
+   select id, name from households order by created_at;
+   ```
+
+2. リポジトリのルートで設定ファイルを作成:
+   ```bash
+   cp .env.migrate.example .env.migrate
+   ```
+
+3. `.env.migrate` を編集し、4 つの値を埋める:
+   ```bash
+   LEGACY_SUPABASE_URL=https://<旧プロジェクト>.supabase.co
+   LEGACY_SUPABASE_SERVICE_ROLE_KEY=eyJ...                    # 旧 service_role
+   TARGET_SUPABASE_URL=https://<新プロジェクト>.supabase.co
+   TARGET_SUPABASE_SERVICE_ROLE_KEY=eyJ...                    # 新 service_role
+   TARGET_HOUSEHOLD_ID=<手順1で確認した household_id>
+   DRY_RUN=true                                                # 最初は true で試走
+   ```
+
+4. ドライラン（カウントだけ表示、書き込みなし）:
+   ```bash
+   npm run migrate:legacy
+   ```
+
+5. 出力が想定通りなら `DRY_RUN=false` に変更して本番実行:
+   ```bash
+   npm run migrate:legacy
+   ```
+
+#### スクリプトの動作
+
+- 旧プロジェクトの `users / expense_categories / payment_methods / fixed_cost_masters / transactions / investment_accounts / investment_transactions / cash_balance_snapshots` を順番に読み出す
+- すべて新プロジェクトに **`household_id = TARGET_HOUSEHOLD_ID` 付きで再 INSERT**
+- 旧 ID → 新 ID のマッピングを内部で構築し、外部キー（`user_id`, `category_id`, `payment_method_id` 等）を再リンク
+- `investment_holdings` は trade 履歴から再計算可能なのでスキップ → 移行後にアプリの「保有を再計算」ボタンを押す
+
+#### 注意
+
+- スクリプトは **冪等ではない** ので、同じ household_id に対して 2 回流すと重複行ができる。失敗した場合は対象テーブルを TRUNCATE してから再実行
+- `auth.users` は触らない（旧プロジェクトのアカウントと新プロジェクトのアカウントは別物）
+- 旧プロジェクトには **読み取り専用** でアクセス（DELETE / UPDATE は実行しない）
+
+#### 配偶者 / 同居人を追加
+
+新プロジェクトで `/signup` または招待リンク経由で 2 人目以降を `household_members` に追加。
+旧 `users` テーブルの「ジャンコ」「ひか」のような payer ラベルは既に世帯にコピー済みなので、取引の支払い者参照はそのまま生きる。
 
 ---
 
