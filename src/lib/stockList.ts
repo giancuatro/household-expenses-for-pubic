@@ -1,6 +1,12 @@
 export type StockItem = {
   ticker: string;
+  /**
+   * Display name. For stocks/ETFs: company name (e.g. "Microsoft").
+   * For mutual funds: 愛称/nickname (e.g. "雪だるま全世界株式").
+   */
   name: string;
+  /** Official long name for funds (正式名称). Unused for stocks. */
+  officialName?: string;
   type: "US" | "JP" | "fund";
   /** Yahoo Finance ticker (JP stocks get ".T" suffix, funds use their code) */
   yahooTicker?: string;
@@ -141,9 +147,31 @@ export const STOCK_LIST: StockItem[] = [
   { ticker: "6902", name: "デンソー", type: "JP", yahooTicker: "6902.T" },
   { ticker: "7741", name: "HOYA", type: "JP", yahooTicker: "7741.T" },
   // ---- Funds (yahooTicker = Yahoo Japan finance fund code) ----
-  { ticker: "SBI_WORLD", name: "SBI・全世界株式インデックス・ファンド", type: "fund", yahooTicker: "8931217C", priceUnit: 10000 },
-  { ticker: "DAIWA_NDX", name: "iFreeNEXT NASDAQ100インデックス", type: "fund", yahooTicker: "04317188", priceUnit: 10000 },
-  { ticker: "ORUKAN", name: "eMAXIS Slim 全世界株式(オール・カントリー)", type: "fund", yahooTicker: "0331418A", priceUnit: 10000 },
+  // For funds, `name` is the 愛称 (nickname); `officialName` is the 正式名称.
+  {
+    ticker: "SBI_WORLD",
+    name: "雪だるま全世界株式",
+    officialName: "SBI・全世界株式インデックス・ファンド",
+    type: "fund",
+    yahooTicker: "8931217C",
+    priceUnit: 10000,
+  },
+  {
+    ticker: "DAIWA_NDX",
+    name: "iFreeNEXT NASDAQ100",
+    officialName: "iFreeNEXT NASDAQ100インデックス",
+    type: "fund",
+    yahooTicker: "04317188",
+    priceUnit: 10000,
+  },
+  {
+    ticker: "ORUKAN",
+    name: "オルカン",
+    officialName: "eMAXIS Slim 全世界株式（オール・カントリー）",
+    type: "fund",
+    yahooTicker: "03311187",
+    priceUnit: 10000,
+  },
 ];
 
 /** Return price unit (10000 for JP mutual funds, 1 for all others). */
@@ -162,6 +190,31 @@ export function getTickerCurrency(ticker: string): "JPY" | "USD" {
 export function getTickerType(ticker: string): "US" | "JP" | "fund" | undefined {
   const item = STOCK_LIST.find((s) => s.ticker.toLowerCase() === ticker.toLowerCase());
   return item?.type;
+}
+
+/**
+ * Resolve the labels to show in tables for a given ticker.
+ *
+ * - Stocks/ETFs: primary = company name (e.g. "Microsoft"), secondary = ticker (e.g. "MSFT")
+ * - Mutual funds: primary = 愛称 (e.g. "雪だるま全世界株式"), secondary = 正式名称
+ *
+ * `fallbackName` is used when the ticker isn't in STOCK_LIST (custom tickers).
+ */
+export function getTickerLabels(
+  ticker: string,
+  fallbackName?: string | null,
+): { primary: string; secondary: string } {
+  const item = STOCK_LIST.find((s) => s.ticker.toLowerCase() === ticker.toLowerCase());
+  if (!item) {
+    return { primary: fallbackName ?? ticker, secondary: ticker };
+  }
+  if (item.type === "fund") {
+    return {
+      primary: item.name,
+      secondary: item.officialName ?? "",
+    };
+  }
+  return { primary: item.name, secondary: ticker };
 }
 
 /** Search stock list by ticker or name (case-insensitive, max 8 results). */

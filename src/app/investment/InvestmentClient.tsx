@@ -10,7 +10,14 @@ import type {
   UserRow,
 } from "@/lib/types";
 import { yen, todayIso, formatJaDate } from "@/lib/format";
-import { searchStocks, getPriceUnit, getTickerCurrency, getTickerType, type StockItem } from "@/lib/stockList";
+import {
+  searchStocks,
+  getPriceUnit,
+  getTickerCurrency,
+  getTickerType,
+  getTickerLabels,
+  type StockItem,
+} from "@/lib/stockList";
 import { recordTrade, bulkRecordTrades, deleteInvestmentTransactions } from "../actions/investment";
 
 type Props = {
@@ -18,6 +25,7 @@ type Props = {
   accounts: InvestmentAccountRow[];
   holdings: InvestmentHoldingRow[];
   trades: InvestmentTransactionRow[];
+  initialPrices?: Record<string, LivePrice>;
 };
 
 type LivePrice = { price: number; currency: string; priceUnit: number };
@@ -60,17 +68,50 @@ function formatPrice(price: number, ticker: string, showPerUnit = false): string
 }
 
 /* ================================================================ */
-export default function InvestmentClient({ users, accounts, holdings, trades }: Props) {
+export default function InvestmentClient({ users, accounts, holdings, trades, initialPrices }: Props) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
   const [bulkUpdating, setBulkUpdating] = useState(false);
-  const [priceMap, setPriceMap] = useState<Map<string, LivePrice>>(new Map());
+  const [priceMap, setPriceMap] = useState<Map<string, LivePrice>>(() => {
+    const m = new Map<string, LivePrice>();
+    if (initialPrices) {
+      for (const [k, v] of Object.entries(initialPrices)) m.set(k, v);
+    }
+    return m;
+  });
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /* Selection mode state for trade history */
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTradeIds, setSelectedTradeIds] = useState<Set<string>>(new Set());
+
+  /* Trade history filter/sort state */
+  const [tradeFilter, setTradeFilter] = useState({
+    from: "",
+    to: "",
+    accountId: "" as string,
+    action: "" as "" | "buy" | "sell",
+    query: "",
+  });
+  const [tradeSort, setTradeSort] = useState<{
+    key: "date" | "amount" | "ticker";
+    dir: "asc" | "desc";
+  }>({ key: "date", dir: "desc" });
+
+  /* Holdings sort state — default: largest value first */
+  type HoldingSortKey = "ticker" | "quantity" | "avgCost" | "price" | "value" | "gain";
+  const [holdingSort, setHoldingSort] = useState<{ key: HoldingSortKey; dir: "asc" | "desc" }>({
+    key: "value",
+    dir: "desc",
+  });
+  const toggleHoldingSort = useCallback((key: HoldingSortKey) => {
+    setHoldingSort((prev) => {
+      if (prev.key === key) return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
+      // Sensible defaults: numeric columns desc (largest first), ticker asc (A→Z)
+      return { key, dir: key === "ticker" ? "asc" : "desc" };
+    });
+  }, []);
 
   // Always-fresh ref: avoids stale closure when interval fires after props update
   const holdingsRef = useRef(holdings);
@@ -86,6 +127,45 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
       return true;
     });
   }, [holdings]);
+
+  /* Sorted holdings — default value-desc; numeric cols depend on live price */
+  const sortedHoldings = useMemo(() => {
+    const arr = [...deduped];
+    const sign = holdingSort.dir === "asc" ? 1 : -1;
+    arr.sort((a, b) => {
+      const liveA = priceMap.get(a.ticker);
+      const liveB = priceMap.get(b.ticker);
+      let cmp = 0;
+      switch (holdingSort.key) {
+        case "ticker":
+          cmp = a.ticker.localeCompare(b.ticker);
+          break;
+        case "quantity":
+          cmp = a.quantity - b.quantity;
+          break;
+        case "avgCost":
+          cmp = a.avg_cost_usd - b.avg_cost_usd;
+          break;
+        case "price": {
+          const pa = liveA?.price ?? a.current_price_usd;
+          const pb = liveB?.price ?? b.current_price_usd;
+          cmp = pa - pb;
+          break;
+        }
+        case "value":
+          cmp = holdingValueJpy(a, liveA) - holdingValueJpy(b, liveB);
+          break;
+        case "gain": {
+          const ga = holdingValueJpy(a, liveA) - holdingCostJpy(a);
+          const gb = holdingValueJpy(b, liveB) - holdingCostJpy(b);
+          cmp = ga - gb;
+          break;
+        }
+      }
+      return cmp * sign;
+    });
+    return arr;
+  }, [deduped, priceMap, holdingSort]);
 
   /* Live totals computed from priceMap */
   const { totalJpy, totalGainJpy } = useMemo(() => {
@@ -131,13 +211,6 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
     return realized;
   }, [trades]);
 
-  const avgRate = useMemo(() => {
-    if (deduped.length === 0) return 150;
-    const w = deduped.reduce((a, h) => a + holdingValueJpy(h, priceMap.get(h.ticker)), 0);
-    const r = deduped.reduce((a, h) => a + h.exchange_rate * holdingValueJpy(h, priceMap.get(h.ticker)), 0);
-    return w > 0 ? r / w : deduped[0].exchange_rate;
-  }, [deduped, priceMap]);
-
   /* Account-level summary */
   const accountSummary = useMemo(() => {
     const map = new Map<string, { value: number; gain: number }>();
@@ -163,6 +236,46 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
     }
     return map;
   }, [users, accounts, accountSummary]);
+
+  /* Trade history: filter + sort */
+  const filteredSortedTrades = useMemo(() => {
+    const f = tradeFilter;
+    const q = f.query.trim().toLowerCase();
+    const filtered = trades.filter((t) => {
+      if (f.from && t.date < f.from) return false;
+      if (f.to && t.date > f.to) return false;
+      if (f.accountId && t.account_id !== f.accountId) return false;
+      if (f.action && t.action !== f.action) return false;
+      if (q) {
+        const labels = getTickerLabels(t.ticker, t.name);
+        const hay =
+          `${t.ticker} ${labels.primary} ${labels.secondary} ${t.name ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const sign = tradeSort.dir === "asc" ? 1 : -1;
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      if (tradeSort.key === "date") {
+        cmp = a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+      } else if (tradeSort.key === "amount") {
+        cmp = a.amount_jpy - b.amount_jpy;
+      } else {
+        cmp = a.ticker.localeCompare(b.ticker);
+      }
+      return cmp * sign;
+    });
+    return filtered;
+  }, [trades, tradeFilter, tradeSort]);
+
+  const toggleSort = useCallback((key: "date" | "amount" | "ticker") => {
+    setTradeSort((prev) => {
+      if (prev.key === key) return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
+      // Sensible defaults: date=desc (newest first), amount=desc (largest first), ticker=asc
+      return { key, dir: key === "ticker" ? "asc" : "desc" };
+    });
+  }, []);
 
   /**
    * Fetch live prices for all holdings and update client-side priceMap only.
@@ -193,24 +306,24 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
     if (fail > 0) setErr(`${ok} 銘柄更新 / ${fail} 失敗`);
   }, []); // stable — reads fresh data via holdingsRef
 
-  /* Auto-fetch on mount + 5-minute refresh interval */
+  /* Refresh on a 5-minute interval. Skip initial fetch if SSR already
+   * supplied prices — they're at most a few seconds old. */
   useEffect(() => {
-    bulkUpdatePrices();
+    if (!initialPrices || Object.keys(initialPrices).length === 0) {
+      bulkUpdatePrices();
+    }
     intervalRef.current = setInterval(() => {
       if (document.visibilityState !== "hidden") bulkUpdatePrices();
     }, 5 * 60 * 1000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [bulkUpdatePrices]);
+  }, [bulkUpdatePrices, initialPrices]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-xl font-bold">投資管理</h1>
-        <div className="text-xs text-muted-foreground">
-          為替レート（加重平均）: <strong>¥{avgRate.toFixed(2)} / USD</strong>
-        </div>
       </div>
 
       {/* Summary */}
@@ -308,27 +421,85 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
           <table className="w-full text-sm min-w-[640px] border-separate border-spacing-0">
             <thead className="text-xs text-muted-foreground">
               <tr>
-                <th className="sticky left-0 z-20 bg-card text-left whitespace-nowrap px-2 py-1.5 border-b border-r border-border">銘柄</th>
-                <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">株数/口数</th>
-                <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">平均取得単価</th>
-                <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">現在価格</th>
-                <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">評価額(円)</th>
-                <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">損益(円)</th>
+                <SortableTh
+                  className="sticky left-0 z-20 bg-card text-left whitespace-nowrap px-2 py-1.5 border-b border-r border-border"
+                  active={holdingSort.key === "ticker"}
+                  dir={holdingSort.dir}
+                  onClick={() => toggleHoldingSort("ticker")}
+                >
+                  銘柄
+                </SortableTh>
+                <SortableTh
+                  className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={holdingSort.key === "quantity"}
+                  dir={holdingSort.dir}
+                  onClick={() => toggleHoldingSort("quantity")}
+                >
+                  株数/口数
+                </SortableTh>
+                <SortableTh
+                  className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={holdingSort.key === "avgCost"}
+                  dir={holdingSort.dir}
+                  onClick={() => toggleHoldingSort("avgCost")}
+                >
+                  平均取得単価
+                </SortableTh>
+                <SortableTh
+                  className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={holdingSort.key === "price"}
+                  dir={holdingSort.dir}
+                  onClick={() => toggleHoldingSort("price")}
+                >
+                  現在価格
+                </SortableTh>
+                <SortableTh
+                  className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={holdingSort.key === "value"}
+                  dir={holdingSort.dir}
+                  onClick={() => toggleHoldingSort("value")}
+                >
+                  評価額(円)
+                </SortableTh>
+                <SortableTh
+                  className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={holdingSort.key === "gain"}
+                  dir={holdingSort.dir}
+                  onClick={() => toggleHoldingSort("gain")}
+                >
+                  損益(円)
+                </SortableTh>
               </tr>
             </thead>
             <tbody>
-              {deduped.map((h) => {
+              {sortedHoldings.map((h) => {
                 const live = priceMap.get(h.ticker);
                 const val = holdingValueJpy(h, live);
                 const cost = holdingCostJpy(h);
                 const gain = val - cost;
                 const isFund = getPriceUnit(h.ticker) > 1;
                 const livePrice = live?.price ?? h.current_price_usd;
+                const labels = getTickerLabels(h.ticker, h.name);
                 return (
                   <tr key={h.id}>
                     <td className="sticky left-0 z-10 bg-card px-2 py-1.5 text-xs whitespace-nowrap border-b border-r border-border">
-                      <div className="font-mono text-[10px] text-muted-foreground leading-tight">{h.ticker}</div>
-                      <div className="font-medium truncate max-w-[160px] leading-tight" title={h.name ?? "-"}>{h.name ?? "-"}</div>
+                      <div
+                        className="font-medium truncate max-w-[200px] leading-tight"
+                        title={labels.primary}
+                      >
+                        {labels.primary}
+                      </div>
+                      {labels.secondary && (
+                        <div
+                          className={clsx(
+                            "truncate max-w-[200px] leading-tight text-muted-foreground",
+                            isFund ? "text-[10px]" : "font-mono text-[10px]"
+                          )}
+                          title={labels.secondary}
+                        >
+                          {labels.secondary}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 text-right text-xs whitespace-nowrap tabular-nums border-b border-border">
                       {h.quantity.toLocaleString("ja-JP")}
@@ -369,7 +540,19 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
       {/* Trade history */}
       <section className="card">
         <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-          <h2 className="font-semibold">売買履歴</h2>
+          <h2 className="font-semibold">
+            売買履歴
+            {(() => {
+              const total = trades.length;
+              const shown = filteredSortedTrades.length;
+              if (shown === total) return null;
+              return (
+                <span className="ml-2 text-xs text-muted-foreground font-normal">
+                  {shown} / {total}件
+                </span>
+              );
+            })()}
+          </h2>
           {trades.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap justify-end">
               {!selectMode ? (
@@ -425,22 +608,51 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
             </div>
           )}
         </div>
+        {trades.length > 0 && (
+          <TradeFilterBar
+            filter={tradeFilter}
+            setFilter={setTradeFilter}
+            accounts={accounts}
+            users={users}
+          />
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[640px] border-separate border-spacing-0">
             <thead className="text-xs text-muted-foreground">
               <tr>
                 {selectMode && <th className="bg-card w-10 px-2 py-1.5 border-b border-border"></th>}
-                <th className="sticky left-0 z-20 bg-card text-left whitespace-nowrap px-2 py-1.5 border-b border-r border-border">銘柄</th>
-                <th className="text-left whitespace-nowrap px-2 py-1.5 border-b border-border">日付</th>
+                <SortableTh
+                  className="sticky left-0 z-20 bg-card text-left whitespace-nowrap px-2 py-1.5 border-b border-r border-border"
+                  active={tradeSort.key === "ticker"}
+                  dir={tradeSort.dir}
+                  onClick={() => toggleSort("ticker")}
+                >
+                  銘柄
+                </SortableTh>
+                <SortableTh
+                  className="text-left whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={tradeSort.key === "date"}
+                  dir={tradeSort.dir}
+                  onClick={() => toggleSort("date")}
+                >
+                  日付
+                </SortableTh>
                 <th className="text-left whitespace-nowrap px-2 py-1.5 border-b border-border">口座</th>
                 <th className="text-left whitespace-nowrap px-2 py-1.5 border-b border-border">売買</th>
                 <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">数量</th>
                 <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">単価</th>
-                <th className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border">金額(円)</th>
+                <SortableTh
+                  className="text-right whitespace-nowrap px-2 py-1.5 border-b border-border"
+                  active={tradeSort.key === "amount"}
+                  dir={tradeSort.dir}
+                  onClick={() => toggleSort("amount")}
+                >
+                  金額(円)
+                </SortableTh>
               </tr>
             </thead>
             <tbody>
-              {trades.map((t) => {
+              {filteredSortedTrades.map((t) => {
                 const checked = selectedTradeIds.has(t.id);
                 const toggle = () => {
                   setSelectedTradeIds((prev) => {
@@ -469,7 +681,31 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
                       </td>
                     )}
                     <td className={clsx("sticky left-0 z-10 px-2 py-1.5 whitespace-nowrap border-b border-r border-border", stickyBg)}>
-                      <span className="font-mono text-xs font-medium">{t.ticker}</span>
+                      {(() => {
+                        const labels = getTickerLabels(t.ticker, t.name);
+                        const isFund = getPriceUnit(t.ticker) > 1;
+                        return (
+                          <>
+                            <div
+                              className="text-xs font-medium truncate max-w-[180px] leading-tight"
+                              title={labels.primary}
+                            >
+                              {labels.primary}
+                            </div>
+                            {labels.secondary && (
+                              <div
+                                className={clsx(
+                                  "truncate max-w-[180px] leading-tight text-muted-foreground",
+                                  isFund ? "text-[10px]" : "font-mono text-[10px]"
+                                )}
+                                title={labels.secondary}
+                              >
+                                {labels.secondary}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="px-2 py-1.5 text-xs whitespace-nowrap tabular-nums border-b border-border">{formatJaDate(t.date)}</td>
                     <td className="px-2 py-1.5 text-xs whitespace-nowrap max-w-[180px] truncate border-b border-border">
@@ -494,12 +730,133 @@ export default function InvestmentClient({ users, accounts, holdings, trades }: 
               {trades.length === 0 && (
                 <tr><td colSpan={selectMode ? 8 : 7} className="text-center text-muted-foreground py-4">売買履歴がありません。</td></tr>
               )}
+              {trades.length > 0 && filteredSortedTrades.length === 0 && (
+                <tr><td colSpan={selectMode ? 8 : 7} className="text-center text-muted-foreground py-4">条件に合う取引がありません。</td></tr>
+              )}
             </tbody>
           </table>
         </div>
       </section>
 
       {err && <p className="text-sm text-destructive">{err}</p>}
+    </div>
+  );
+}
+
+/* =================== Trade history filter & sort UI =================== */
+function SortableTh({
+  active,
+  dir,
+  onClick,
+  children,
+  className,
+}: {
+  active: boolean;
+  dir: "asc" | "desc";
+  onClick: () => void;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <th
+      className={clsx(className, "cursor-pointer select-none hover:text-foreground")}
+      onClick={onClick}
+      role="button"
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        <span className="text-[9px] opacity-70">
+          {active ? (dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </span>
+    </th>
+  );
+}
+
+function TradeFilterBar({
+  filter,
+  setFilter,
+  accounts,
+  users,
+}: {
+  filter: { from: string; to: string; accountId: string; action: "" | "buy" | "sell"; query: string };
+  setFilter: React.Dispatch<
+    React.SetStateAction<{
+      from: string;
+      to: string;
+      accountId: string;
+      action: "" | "buy" | "sell";
+      query: string;
+    }>
+  >;
+  accounts: InvestmentAccountRow[];
+  users: UserRow[];
+}) {
+  const isFiltered =
+    filter.from || filter.to || filter.accountId || filter.action || filter.query.trim();
+  return (
+    <div className="mb-3 grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs">
+      <input
+        type="date"
+        className="input text-xs"
+        value={filter.from}
+        onChange={(e) => setFilter((p) => ({ ...p, from: e.target.value }))}
+        placeholder="開始"
+        aria-label="開始日"
+      />
+      <input
+        type="date"
+        className="input text-xs"
+        value={filter.to}
+        onChange={(e) => setFilter((p) => ({ ...p, to: e.target.value }))}
+        placeholder="終了"
+        aria-label="終了日"
+      />
+      <select
+        className="input text-xs"
+        value={filter.accountId}
+        onChange={(e) => setFilter((p) => ({ ...p, accountId: e.target.value }))}
+        aria-label="口座"
+      >
+        <option value="">すべての口座</option>
+        {accounts.map((a) => {
+          const owner = users.find((u) => u.id === a.user_id)?.name;
+          return (
+            <option key={a.id} value={a.id}>
+              {owner ? `${owner} / ${a.account_name}` : a.account_name}
+            </option>
+          );
+        })}
+      </select>
+      <select
+        className="input text-xs"
+        value={filter.action}
+        onChange={(e) =>
+          setFilter((p) => ({ ...p, action: e.target.value as "" | "buy" | "sell" }))
+        }
+        aria-label="売買"
+      >
+        <option value="">買・売すべて</option>
+        <option value="buy">買のみ</option>
+        <option value="sell">売のみ</option>
+      </select>
+      <input
+        className="input text-xs col-span-2 sm:col-span-1"
+        placeholder="銘柄を検索"
+        value={filter.query}
+        onChange={(e) => setFilter((p) => ({ ...p, query: e.target.value }))}
+        aria-label="銘柄検索"
+      />
+      <button
+        className="btn-ghost text-xs disabled:opacity-50"
+        disabled={!isFiltered}
+        onClick={() =>
+          setFilter({ from: "", to: "", accountId: "", action: "", query: "" })
+        }
+      >
+        条件クリア
+      </button>
     </div>
   );
 }
