@@ -1,53 +1,76 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
+import { bootstrapHousehold } from "../actions/auth";
 
 /**
- * Sign-up flow:
- *  1. User enters their email + a household name (e.g. "山田家")
- *  2. Magic link is sent to email
- *  3. /auth/callback exchanges the code, then bootstraps the household + member row
- *
- * The household name is stashed in sessionStorage and passed via the redirect
- * URL so the callback knows whether to create a new household for this user.
+ * Email + password signup. Flow:
+ *   1. supabase.auth.signUp({ email, password })
+ *      - With "Confirm email" disabled in Supabase Auth settings, this
+ *        returns a session cookie immediately. The user is logged in.
+ *      - With "Confirm email" enabled, signUp() returns a user but no
+ *        session; we surface a message asking them to click the email link.
+ *   2. Server action bootstrapHousehold() creates the household, member,
+ *      default categories and payer-label row.
+ *   3. router.replace("/") lands on the home screen.
  */
 export default function SignupPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [householdName, setHouseholdName] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [needConfirm, setNeedConfirm] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
     const trimmedHh = householdName.trim();
-    const trimmedDn = displayName.trim();
     if (!trimmedHh) {
       setError("世帯名を入力してください。");
       setLoading(false);
       return;
     }
-
-    const params = new URLSearchParams({
-      next: "/",
-      household_name: trimmedHh,
-      display_name: trimmedDn || email.split("@")[0],
-    });
-    const redirectTo = `${window.location.origin}/auth/callback?${params.toString()}`;
+    if (password.length < 8) {
+      setError("パスワードは 8 文字以上にしてください。");
+      setLoading(false);
+      return;
+    }
 
     const sb = getSupabaseBrowser();
-    const { error } = await sb.auth.signInWithOtp({
+    const { data, error: signErr } = await sb.auth.signUp({
       email: email.trim(),
-      options: { emailRedirectTo: redirectTo, shouldCreateUser: true },
+      password,
     });
-    setLoading(false);
-    if (error) setError(error.message);
-    else setSent(true);
+    if (signErr) {
+      setLoading(false);
+      setError(signErr.message);
+      return;
+    }
+    if (!data.session) {
+      // Confirm email is enabled — user must verify before logging in.
+      setLoading(false);
+      setNeedConfirm(true);
+      return;
+    }
+    try {
+      await bootstrapHousehold({
+        householdName: trimmedHh,
+        displayName: displayName.trim() || undefined,
+      });
+      router.replace("/");
+      router.refresh();
+    } catch (err: unknown) {
+      setLoading(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return (
@@ -70,9 +93,9 @@ export default function SignupPage() {
           </p>
         </div>
 
-        {sent ? (
+        {needConfirm ? (
           <p className="rounded-lg border border-success/30 bg-success/10 px-3 py-3 text-sm">
-            <strong>{email}</strong> 宛に確認リンクを送りました。リンクをクリックすると世帯「{householdName}」が作成されます。
+            <strong>{email}</strong> 宛に確認メールを送りました。メール内のリンクを開いてアカウント有効化を完了してください。
           </p>
         ) : (
           <>
@@ -108,6 +131,18 @@ export default function SignupPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </label>
+            <label className="block space-y-1">
+              <span className="text-sm font-medium">パスワード</span>
+              <input
+                type="password"
+                required
+                minLength={8}
+                className="input"
+                placeholder="8 文字以上"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
             {error && (
               <p
                 role="alert"
@@ -117,7 +152,7 @@ export default function SignupPage() {
               </p>
             )}
             <button type="submit" className="btn-primary w-full" disabled={loading}>
-              {loading ? "送信中..." : "確認リンクを送る"}
+              {loading ? "作成中..." : "アカウント作成"}
             </button>
             <p className="text-xs text-muted-foreground text-center">
               既にアカウントをお持ちの方は{" "}

@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 
@@ -14,11 +14,12 @@ export default function LoginPage() {
 }
 
 function LoginForm() {
+  const router = useRouter();
   const search = useSearchParams();
   const next = search?.get("next") || "/";
   const callbackError = search?.get("error") || null;
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(callbackError);
   const [loading, setLoading] = useState(false);
 
@@ -27,24 +28,27 @@ function LoginForm() {
     setLoading(true);
     setError(null);
     const sb = getSupabaseBrowser();
-    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
-    const { error } = await sb.auth.signInWithOtp({
+    const { error: signErr } = await sb.auth.signInWithPassword({
       email: email.trim(),
-      options: { emailRedirectTo: redirectTo, shouldCreateUser: true },
+      password,
     });
-    setLoading(false);
-    if (error) setError(error.message);
-    else setSent(true);
+    if (signErr) {
+      setLoading(false);
+      setError(signErr.message);
+      return;
+    }
+    router.replace(next);
+    router.refresh();
   }
 
   async function onGoogle() {
     const sb = getSupabaseBrowser();
     const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
-    const { error } = await sb.auth.signInWithOAuth({
+    const { error: oauthErr } = await sb.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo },
     });
-    if (error) setError(error.message);
+    if (oauthErr) setError(oauthErr.message);
   }
 
   return (
@@ -72,55 +76,62 @@ function LoginForm() {
           </div>
           <h1 className="text-2xl font-bold tracking-tight">家計簿にログイン</h1>
           <p className="text-sm text-muted-foreground">
-            メールアドレスにログイン用のリンクを送ります。
+            メールアドレスとパスワードでログインします。
           </p>
         </div>
 
-        {sent ? (
-          <p className="rounded-lg border border-success/30 bg-success/10 px-3 py-3 text-sm">
-            <strong>{email}</strong> 宛にログインリンクを送りました。メールを開いてリンクをクリックしてください。
+        <label className="block space-y-1">
+          <span className="text-sm font-medium">メールアドレス</span>
+          <input
+            type="email"
+            required
+            className="input"
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoFocus
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-sm font-medium">パスワード</span>
+          <input
+            type="password"
+            required
+            className="input"
+            placeholder="パスワード"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+
+        {error && (
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {error}
           </p>
-        ) : (
-          <>
-            <input
-              type="email"
-              required
-              className="input"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoFocus
-            />
-            {error && (
-              <p
-                role="alert"
-                className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              >
-                {error}
-              </p>
-            )}
-            <button type="submit" className="btn-primary w-full" disabled={loading}>
-              {loading ? "送信中..." : "ログインリンクを送る"}
-            </button>
-
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              <span className="flex-1 h-px bg-border" />
-              <span>または</span>
-              <span className="flex-1 h-px bg-border" />
-            </div>
-
-            <button type="button" onClick={onGoogle} className="btn-secondary w-full">
-              Google でログイン
-            </button>
-
-            <p className="text-xs text-muted-foreground text-center">
-              初めての方は{" "}
-              <Link href="/signup" className="text-primary underline">
-                世帯を新規作成
-              </Link>
-            </p>
-          </>
         )}
+        <button type="submit" className="btn-primary w-full" disabled={loading}>
+          {loading ? "確認中..." : "ログイン"}
+        </button>
+
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="flex-1 h-px bg-border" />
+          <span>または</span>
+          <span className="flex-1 h-px bg-border" />
+        </div>
+
+        <button type="button" onClick={onGoogle} className="btn-secondary w-full">
+          Google でログイン
+        </button>
+
+        <p className="text-xs text-muted-foreground text-center">
+          初めての方は{" "}
+          <Link href="/signup" className="text-primary underline">
+            世帯を新規作成
+          </Link>
+        </p>
       </form>
     </div>
   );
