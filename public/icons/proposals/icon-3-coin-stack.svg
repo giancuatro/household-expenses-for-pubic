@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Coin Stack</title>
+  <rect width="256" height="256" rx="56" fill="#0f172a"/>
+  <!-- ring frame -->
+  <circle cx="128" cy="128" r="100" fill="none" stroke="#2563eb" stroke-width="6" opacity="0.6"/>
+  <!-- bottom coin -->
+  <ellipse cx="128" cy="180" rx="64" ry="14" fill="#b45309"/>
+  <rect x="64" y="160" width="128" height="20" fill="#b45309"/>
+  <ellipse cx="128" cy="160" rx="64" ry="14" fill="#f59e0b"/>
+  <!-- middle coin -->
+  <ellipse cx="128" cy="140" rx="64" ry="14" fill="#b45309"/>
+  <rect x="64" y="120" width="128" height="20" fill="#b45309"/>
+  <ellipse cx="128" cy="120" rx="64" ry="14" fill="#fbbf24"/>
+  <!-- top coin (with ¥) -->
+  <ellipse cx="128" cy="100" rx="64" ry="14" fill="#b45309"/>
+  <rect x="64" y="80" width="128" height="20" fill="#b45309"/>
+  <ellipse cx="128" cy="80" rx="64" ry="14" fill="#fde68a"/>
+  <text x="128" y="86"
+        text-anchor="middle" dominant-baseline="central"
+        font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif"
+        font-size="22" font-weight="800" fill="#78350f">¥</text>
+</svg>

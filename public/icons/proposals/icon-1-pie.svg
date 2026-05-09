@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Minimal Pie</title>
+  <rect width="256" height="256" rx="56" fill="#0f172a"/>
+  <!-- 4 unequal slices, sized 35/30/20/15 percent -->
+  <g transform="translate(128 128)">
+    <!-- 35%: 食費 (blue) -->
+    <path d="M0 0 L0 -82 A82 82 0 0 1 78.04 -25.34 Z" fill="#2563eb"/>
+    <!-- 30%: 家賃 (green) -->
+    <path d="M0 0 L78.04 -25.34 A82 82 0 0 1 25.34 78.04 Z" fill="#10b981"/>
+    <!-- 20%: 雑費 (amber) -->
+    <path d="M0 0 L25.34 78.04 A82 82 0 0 1 -64.20 51.10 Z" fill="#f59e0b"/>
+    <!-- 15%: その他 (red) -->
+    <path d="M0 0 L-64.20 51.10 A82 82 0 0 1 0 -82 Z" fill="#ef4444"/>
+    <!-- center hole -->
+    <circle r="38" fill="#0f172a"/>
+    <text x="0" y="0" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif" font-size="42" font-weight="700" fill="#ffffff">¥</text>
+  </g>
+</svg>

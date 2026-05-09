@@ -1,0 +1,54 @@
+import {
+  listAllTransactions,
+  listCashBalanceSnapshots,
+  listCategories,
+  listFixedCostMasters,
+  listPaymentMethods,
+  listTransactionsForMonth,
+  listUsers,
+} from "@/lib/queries";
+import { addMonths, monthKey } from "@/lib/format";
+import { requireSession } from "@/lib/auth";
+import HomeClient from "./HomeClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const ym = monthKey();
+  const prevYm = addMonths(ym, -1);
+  const [
+    users,
+    categories,
+    transactions,
+    prevTransactions,
+    allTransactions,
+    fixedCostMasters,
+    paymentMethods,
+    cashSnapshots,
+  ] = await Promise.all([
+    listUsers(hid),
+    listCategories(hid),
+    listTransactionsForMonth(hid, ym),
+    listTransactionsForMonth(hid, prevYm),
+    listAllTransactions(hid),
+    listFixedCostMasters(hid),
+    listPaymentMethods(hid).catch(() => []),
+    listCashBalanceSnapshots(hid).catch(() => []),
+  ]);
+
+  return (
+    <HomeClient
+      users={users}
+      categories={categories}
+      transactions={transactions}
+      prevTransactions={prevTransactions}
+      allTransactions={allTransactions}
+      fixedCostMasters={fixedCostMasters}
+      paymentMethods={paymentMethods}
+      cashSnapshots={cashSnapshots}
+      currentMonth={ym}
+    />
+  );
+}

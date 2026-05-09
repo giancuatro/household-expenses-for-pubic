@@ -1,0 +1,9 @@
+{
+  "regions": ["hnd1"],
+  "crons": [
+    {
+      "path": "/api/cron/fixed-costs-catchup",
+      "schedule": "0 16 * * *"
+    }
+  ]
+}

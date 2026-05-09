@@ -1,0 +1,437 @@
+"use server";
+
+import { revalidateTag } from "next/cache";
+import { z } from "zod";
+import { getSupabaseServer, getSupabaseAdmin } from "@/lib/supabase/server";
+import { requireSession, HOUSEHOLD_COOKIE } from "@/lib/auth";
+import { cookies } from "next/headers";
+import { firstOfMonth } from "@/lib/format";
+import { regenerateFixedCostForMaster } from "@/lib/fixedCosts";
+import { randomBytes } from "crypto";
+
+/* -------------------- Users (payer labels) -------------------- */
+export async function createUser(name: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("名前を入力してください。");
+  const sb = getSupabaseServer();
+  const { error } = await sb.from("users").insert({ household_id: hid, name: trimmed });
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:users`);
+}
+
+export async function renameUser(id: string, name: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("名前を入力してください。");
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("users")
+    .update({ name: trimmed })
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:users`);
+}
+
+export async function deleteUser(id: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { count } = await sb
+    .from("transactions")
+    .select("id", { count: "exact", head: true })
+    .eq("household_id", hid)
+    .eq("user_id", id);
+  if ((count ?? 0) > 0) {
+    throw new Error("このユーザーには取引記録があるため削除できません。");
+  }
+  const { error } = await sb.from("users").delete().eq("household_id", hid).eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:users`);
+}
+
+/* -------------------- Categories -------------------- */
+const CategorySchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().min(1).max(40),
+  type: z.enum(["shared", "personal"]),
+  budget_amount: z.number().int().min(0),
+  sort_order: z.number().int().default(0),
+  is_active: z.boolean().default(true),
+});
+
+export async function upsertCategory(input: z.infer<typeof CategorySchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = CategorySchema.parse(input);
+  const sb = getSupabaseServer();
+  if (p.id) {
+    const { error } = await sb
+      .from("expense_categories")
+      .update({
+        name: p.name,
+        type: p.type,
+        budget_amount: p.budget_amount,
+        sort_order: p.sort_order,
+        is_active: p.is_active,
+      })
+      .eq("household_id", hid)
+      .eq("id", p.id);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await sb.from("expense_categories").insert({
+      household_id: hid,
+      name: p.name,
+      type: p.type,
+      budget_amount: p.budget_amount,
+      sort_order: p.sort_order,
+      is_active: p.is_active,
+    });
+    if (error) throw new Error(error.message);
+  }
+  revalidateTag(`hh:${hid}:categories`);
+}
+
+export async function deleteCategory(id: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("expense_categories")
+    .delete()
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:categories`);
+}
+
+export async function reorderCategories(ids: string[]) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  await Promise.all(
+    ids.map((id, idx) =>
+      sb
+        .from("expense_categories")
+        .update({ sort_order: (idx + 1) * 10 })
+        .eq("household_id", hid)
+        .eq("id", id),
+    ),
+  );
+  revalidateTag(`hh:${hid}:categories`);
+}
+
+/* -------------------- Fixed cost masters -------------------- */
+const FixedSchema = z.object({
+  id: z.string().uuid().optional(),
+  label: z.string().min(1).max(40),
+  name: z.string().min(1).max(80),
+  user_id: z.string().uuid().nullable().optional(),
+  amount: z.number().int().min(0),
+  valid_from_month: z.string().regex(/^\d{4}-\d{2}$/),
+  notes: z.string().max(400).nullable().optional(),
+  payment_method_id: z.string().uuid().nullable().optional(),
+  payment_day: z.number().int().min(1).max(31).nullable().optional(),
+});
+
+export async function upsertFixedCost(input: z.infer<typeof FixedSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = FixedSchema.parse(input);
+  const sb = getSupabaseServer();
+  const row = {
+    household_id: hid,
+    label: p.label,
+    name: p.name,
+    user_id: p.user_id ?? null,
+    amount: p.amount,
+    valid_from: firstOfMonth(p.valid_from_month),
+    notes: p.notes ?? null,
+    payment_method_id: p.payment_method_id ?? null,
+    payment_day: p.payment_day ?? null,
+  };
+  let masterId: string | undefined = p.id;
+  if (p.id) {
+    const { error } = await sb
+      .from("fixed_cost_masters")
+      .update(row)
+      .eq("household_id", hid)
+      .eq("id", p.id);
+    if (error) throw new Error(error.message);
+  } else {
+    const { data, error } = await sb
+      .from("fixed_cost_masters")
+      .insert(row)
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    masterId = data?.id as string | undefined;
+  }
+  if (masterId) {
+    try {
+      await regenerateFixedCostForMaster(hid, masterId, 2);
+    } catch (e) {
+      console.error("regenerateFixedCostForMaster failed:", e);
+    }
+  }
+  revalidateTag(`hh:${hid}:fixed-cost-masters`);
+  revalidateTag(`hh:${hid}:transactions`);
+}
+
+export async function deleteFixedCost(id: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("fixed_cost_masters")
+    .delete()
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:fixed-cost-masters`);
+}
+
+/* -------------------- Payment methods -------------------- */
+const PaymentMethodSchema = z.object({
+  id: z.string().uuid().optional(),
+  user_id: z.string().uuid().nullable().optional(),
+  name: z.string().min(1).max(40),
+  type: z.enum(["cash", "transfer", "credit_card"]),
+  closing_day: z.number().int().min(1).max(31).nullable().optional(),
+  payment_day: z.number().int().min(1).max(31).nullable().optional(),
+  payment_month_offset: z.number().int().min(0).max(6).default(1),
+  bank_account_label: z.string().max(40).nullable().optional(),
+  display_order: z.number().int().default(0),
+});
+
+export async function upsertPaymentMethod(input: z.infer<typeof PaymentMethodSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = PaymentMethodSchema.parse(input);
+  const sb = getSupabaseServer();
+  const row = {
+    household_id: hid,
+    user_id: p.user_id ?? null,
+    name: p.name,
+    type: p.type,
+    closing_day: p.type === "credit_card" ? p.closing_day ?? null : null,
+    payment_day: p.type === "credit_card" ? p.payment_day ?? null : null,
+    payment_month_offset: p.type === "credit_card" ? p.payment_month_offset : 0,
+    bank_account_label: p.bank_account_label ?? null,
+    display_order: p.display_order,
+  };
+  if (p.id) {
+    const { error } = await sb
+      .from("payment_methods")
+      .update(row)
+      .eq("household_id", hid)
+      .eq("id", p.id);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await sb.from("payment_methods").insert(row);
+    if (error) throw new Error(error.message);
+  }
+  revalidateTag(`hh:${hid}:payment-methods`);
+}
+
+export async function archivePaymentMethod(id: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("payment_methods")
+    .update({ archived: true })
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:payment-methods`);
+}
+
+export async function setPaymentMethodArchived(id: string, archived: boolean) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("payment_methods")
+    .update({ archived })
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:payment-methods`);
+}
+
+export async function deletePaymentMethod(id: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { count } = await sb
+    .from("transactions")
+    .select("id", { count: "exact", head: true })
+    .eq("household_id", hid)
+    .eq("payment_method_id", id);
+  if ((count ?? 0) > 0) {
+    const { error } = await sb
+      .from("payment_methods")
+      .update({ archived: true })
+      .eq("household_id", hid)
+      .eq("id", id);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await sb
+      .from("payment_methods")
+      .delete()
+      .eq("household_id", hid)
+      .eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+  revalidateTag(`hh:${hid}:payment-methods`);
+}
+
+const BulkPmSchema = z.object({
+  payment_method_id: z.string().uuid(),
+  user_id: z.string().uuid().nullable().optional(),
+  date_from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  date_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  only_unassigned: z.boolean().default(true),
+});
+
+export async function bulkAssignPaymentMethod(input: z.infer<typeof BulkPmSchema>): Promise<number> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = BulkPmSchema.parse(input);
+  if (p.date_from > p.date_to) throw new Error("開始日が終了日より後ろです。");
+  const sb = getSupabaseServer();
+  let q = sb
+    .from("transactions")
+    .update({ payment_method_id: p.payment_method_id })
+    .eq("household_id", hid)
+    .gte("date", p.date_from)
+    .lte("date", p.date_to);
+  if (p.user_id) q = q.eq("user_id", p.user_id);
+  if (p.only_unassigned) q = q.is("payment_method_id", null);
+  const { data, error } = await q.select("id");
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:transactions`);
+  return data?.length ?? 0;
+}
+
+/* -------------------- Cash balance snapshots -------------------- */
+const CashBalanceSchema = z.object({
+  as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  balance: z.number().int(),
+  note: z.string().max(200).nullable().optional(),
+});
+
+export async function upsertCashBalance(input: z.infer<typeof CashBalanceSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = CashBalanceSchema.parse(input);
+  const sb = getSupabaseServer();
+  const { error } = await sb.from("cash_balance_snapshots").insert({
+    household_id: hid,
+    as_of_date: p.as_of_date,
+    balance: p.balance,
+    note: p.note ?? null,
+  });
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:cash-balance`);
+}
+
+export async function deleteCashBalance(id: string) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("cash_balance_snapshots")
+    .delete()
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:cash-balance`);
+}
+
+/* -------------------- Household settings + invitations -------------------- */
+const RenameHouseholdSchema = z.object({
+  name: z.string().min(1).max(60),
+});
+
+export async function renameHousehold(input: z.infer<typeof RenameHouseholdSchema>) {
+  const { household } = await requireSession();
+  if (household.role !== "owner") throw new Error("世帯名の変更はオーナーのみ可能です。");
+  const p = RenameHouseholdSchema.parse(input);
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("households")
+    .update({ name: p.name })
+    .eq("id", household.household_id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${household.household_id}`);
+}
+
+const InviteSchema = z.object({
+  email: z.string().email().max(120),
+  role: z.enum(["owner", "editor", "viewer"]).default("editor"),
+});
+
+export async function inviteMember(input: z.infer<typeof InviteSchema>) {
+  const { user, household } = await requireSession();
+  if (household.role !== "owner") throw new Error("メンバーの招待はオーナーのみ可能です。");
+  const p = InviteSchema.parse(input);
+  const token = randomBytes(24).toString("base64url");
+
+  const admin = getSupabaseAdmin();
+  const { error } = await admin.from("household_invitations").insert({
+    household_id: household.household_id,
+    email: p.email.toLowerCase(),
+    role: p.role,
+    token,
+    invited_by: user.id,
+  });
+  if (error) throw new Error(error.message);
+  return { token };
+}
+
+export async function revokeInvitation(id: string) {
+  const { household } = await requireSession();
+  if (household.role !== "owner") throw new Error("招待の取り消しはオーナーのみ可能です。");
+  const admin = getSupabaseAdmin();
+  const { error } = await admin
+    .from("household_invitations")
+    .delete()
+    .eq("id", id)
+    .eq("household_id", household.household_id);
+  if (error) throw new Error(error.message);
+}
+
+export async function removeMember(authUserId: string) {
+  const { user, household } = await requireSession();
+  if (household.role !== "owner" && authUserId !== user.id) {
+    throw new Error("他のメンバーの削除はオーナーのみ可能です。");
+  }
+  const admin = getSupabaseAdmin();
+  const { error } = await admin
+    .from("household_members")
+    .delete()
+    .eq("household_id", household.household_id)
+    .eq("auth_user_id", authUserId);
+  if (error) throw new Error(error.message);
+}
+
+export async function switchHousehold(householdId: string) {
+  const { memberships } = await requireSession();
+  if (!memberships.some((m) => m.household_id === householdId)) {
+    throw new Error("その世帯のメンバーではありません。");
+  }
+  cookies().set({
+    name: HOUSEHOLD_COOKIE,
+    value: householdId,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+}

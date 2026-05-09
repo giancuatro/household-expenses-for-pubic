@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>J&amp;H Twin Leaf</title>
+  <rect width="256" height="256" rx="56" fill="#fafbfd"/>
+  <!-- left blue leaf -->
+  <path d="M128 200 Q60 168 60 110 Q60 64 128 56 Q128 130 128 200 Z"
+        fill="#2563eb"/>
+  <!-- right green leaf -->
+  <path d="M128 200 Q196 168 196 110 Q196 64 128 56 Q128 130 128 200 Z"
+        fill="#10b981"/>
+  <!-- central seam -->
+  <path d="M128 56 L128 200" stroke="#0f172a" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+  <!-- ¥ at the join -->
+  <circle cx="128" cy="124" r="22" fill="#ffffff"/>
+  <text x="128" y="124"
+        text-anchor="middle" dominant-baseline="central"
+        font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif"
+        font-size="28" font-weight="700" fill="#0f172a">¥</text>
+</svg>

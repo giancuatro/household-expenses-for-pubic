@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Yen Pin</title>
+  <rect width="256" height="256" rx="56" fill="#eef2ff"/>
+  <!-- pin shadow -->
+  <ellipse cx="128" cy="218" rx="38" ry="6" fill="#1e3a8a" opacity="0.18"/>
+  <!-- pin body -->
+  <path d="M128 32
+           C 78 32 44 66 44 116
+           C 44 158 84 188 122 218
+           Q 128 222 134 218
+           C 172 188 212 158 212 116
+           C 212 66 178 32 128 32 Z"
+        fill="#2563eb"/>
+  <path d="M128 32
+           C 78 32 44 66 44 116
+           C 44 158 84 188 122 218
+           Q 128 222 134 218
+           C 172 188 212 158 212 116
+           C 212 66 178 32 128 32 Z"
+        fill="none" stroke="#1e3a8a" stroke-width="3" opacity="0.4"/>
+  <!-- ¥ in white -->
+  <text x="128" y="120"
+        text-anchor="middle" dominant-baseline="central"
+        font-family="-apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif"
+        font-size="92" font-weight="800" fill="#ffffff">¥</text>
+</svg>
