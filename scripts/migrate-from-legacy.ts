@@ -158,31 +158,82 @@ async function migrate(): Promise<void> {
   console.log(`Verified destination household: "${hh.name}"\n`);
 
   // 1. users (payer labels)
+  // The destination may already have payer rows seeded by signup
+  // bootstrap (e.g. one row for the signed-up user's display_name).
+  // Reuse those by name; only insert legacy names that aren't already
+  // present. Build userMap covering both reused + newly-inserted rows.
   console.log("► users");
   const legacyUsers = await fetchAll(legacy, "users");
-  console.log(`  ${legacyUsers.length} rows`);
-  const userPayload = legacyUsers.map((u) => ({
-    ...clean(u, ["id", "household_id", "auth_user_id"]),
-    household_id: TARGET_HOUSEHOLD_ID,
-  }));
-  const newUsers = await insertIfNeeded("users", userPayload);
+  console.log(`  ${legacyUsers.length} legacy rows`);
+  const { data: existingUsersData } = await target
+    .from("users")
+    .select("id, name")
+    .eq("household_id", TARGET_HOUSEHOLD_ID);
+  const existingUserByName = new Map<string, string>();
+  for (const u of (existingUsersData ?? []) as { id: string; name: string }[]) {
+    existingUserByName.set(u.name, u.id);
+  }
+  console.log(`  ${existingUserByName.size} already in target — will reuse by name`);
   const userMap = new Map<string, string>();
-  legacyUsers.forEach((legacy, i) => {
-    const newId = (newUsers[i]?.id ?? legacy.id) as string;
-    userMap.set(legacy.id as string, newId);
-  });
+  const usersToInsert: Row[] = [];
+  const usersToInsertLegacy: Row[] = [];
+  for (const lu of legacyUsers) {
+    const reused = existingUserByName.get(lu.name as string);
+    if (reused) {
+      userMap.set(lu.id as string, reused);
+    } else {
+      usersToInsert.push({
+        ...clean(lu, ["id", "household_id", "auth_user_id"]),
+        household_id: TARGET_HOUSEHOLD_ID,
+      });
+      usersToInsertLegacy.push(lu);
+    }
+  }
+  if (usersToInsert.length > 0) {
+    console.log(`  inserting ${usersToInsert.length} new`);
+    const newUsers = await insertIfNeeded("users", usersToInsert);
+    usersToInsertLegacy.forEach((lu, i) => {
+      userMap.set(lu.id as string, (newUsers[i]?.id ?? lu.id) as string);
+    });
+  }
 
-  // 2. expense_categories
+  // 2. expense_categories — same reuse-by-name pattern.
+  // Unique constraint is (household_id, name, type) so the key is name+type.
   console.log("► expense_categories");
   const legacyCats = await fetchAll(legacy, "expense_categories");
-  console.log(`  ${legacyCats.length} rows`);
-  const catPayload = legacyCats.map((c) => ({
-    ...clean(c, ["id", "household_id"]),
-    household_id: TARGET_HOUSEHOLD_ID,
-  }));
-  const newCats = await insertIfNeeded("expense_categories", catPayload);
+  console.log(`  ${legacyCats.length} legacy rows`);
+  const { data: existingCatsData } = await target
+    .from("expense_categories")
+    .select("id, name, type")
+    .eq("household_id", TARGET_HOUSEHOLD_ID);
+  const existingCatByKey = new Map<string, string>();
+  for (const c of (existingCatsData ?? []) as { id: string; name: string; type: string }[]) {
+    existingCatByKey.set(`${c.name}::${c.type}`, c.id);
+  }
+  console.log(`  ${existingCatByKey.size} already in target — will reuse by (name, type)`);
   const catMap = new Map<string, string>();
-  legacyCats.forEach((c, i) => catMap.set(c.id as string, (newCats[i]?.id ?? c.id) as string));
+  const catsToInsert: Row[] = [];
+  const catsToInsertLegacy: Row[] = [];
+  for (const lc of legacyCats) {
+    const key = `${lc.name as string}::${lc.type as string}`;
+    const reused = existingCatByKey.get(key);
+    if (reused) {
+      catMap.set(lc.id as string, reused);
+    } else {
+      catsToInsert.push({
+        ...clean(lc, ["id", "household_id"]),
+        household_id: TARGET_HOUSEHOLD_ID,
+      });
+      catsToInsertLegacy.push(lc);
+    }
+  }
+  if (catsToInsert.length > 0) {
+    console.log(`  inserting ${catsToInsert.length} new`);
+    const newCats = await insertIfNeeded("expense_categories", catsToInsert);
+    catsToInsertLegacy.forEach((lc, i) => {
+      catMap.set(lc.id as string, (newCats[i]?.id ?? lc.id) as string);
+    });
+  }
 
   // 3. payment_methods
   console.log("► payment_methods");
@@ -209,11 +260,33 @@ async function migrate(): Promise<void> {
   }));
   await insertIfNeeded("fixed_cost_masters", fcPayload);
 
-  // 5. transactions (largest table — paginate)
+  // 5. transactions (largest table — paginate).
+  // Drop rows whose source_ref already exists in the destination so a
+  // re-run / partially-migrated state doesn't blow up on the
+  // (household_id, source_ref) unique index. Manual rows (source_ref null)
+  // are always inserted because the constraint only fires when source_ref
+  // is non-null.
   console.log("► transactions");
   const legacyTxn = await fetchAll(legacy, "transactions");
-  console.log(`  ${legacyTxn.length} rows`);
-  const txnPayload = legacyTxn.map((t) => ({
+  console.log(`  ${legacyTxn.length} legacy rows`);
+  const { data: existingRefs } = await target
+    .from("transactions")
+    .select("source_ref")
+    .eq("household_id", TARGET_HOUSEHOLD_ID)
+    .not("source_ref", "is", null);
+  const seenRefs = new Set<string>(
+    ((existingRefs ?? []) as { source_ref: string }[]).map((r) => r.source_ref),
+  );
+  const filteredTxn = legacyTxn.filter((t) => {
+    const ref = t.source_ref as string | null;
+    return !ref || !seenRefs.has(ref);
+  });
+  if (filteredTxn.length !== legacyTxn.length) {
+    console.log(
+      `  ${legacyTxn.length - filteredTxn.length} skipped (source_ref already in target)`,
+    );
+  }
+  const txnPayload = filteredTxn.map((t) => ({
     ...clean(t, ["id", "household_id"]),
     household_id: TARGET_HOUSEHOLD_ID,
     user_id: userMap.get(t.user_id as string) ?? t.user_id,
@@ -221,6 +294,14 @@ async function migrate(): Promise<void> {
     payment_method_id: t.payment_method_id ? pmMap.get(t.payment_method_id as string) ?? null : null,
   }));
   const newTxns = await insertIfNeeded("transactions", txnPayload);
+  // Re-bind txnMap to the filtered set (so legacy ids that we DID insert
+  // get mapped, the rest map to themselves which is harmless because
+  // investment_transactions.linked_transaction_id only references rows we
+  // inserted in this run).
+  const legacyTxnForMap = filteredTxn;
+  legacyTxn.length = 0; // free memory
+  // restore variable name expected below
+  legacyTxn.push(...legacyTxnForMap);
   const txnMap = new Map<string, string>();
   legacyTxn.forEach((t, i) => txnMap.set(t.id as string, (newTxns[i]?.id ?? t.id) as string));
 
