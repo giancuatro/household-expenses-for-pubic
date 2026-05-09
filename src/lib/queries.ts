@@ -38,6 +38,7 @@ async function _listUsers(hid: string): Promise<UserRow[]> {
 export async function listUsers(hid: string): Promise<UserRow[]> {
   return unstable_cache(() => _listUsers(hid), ["users", hid], {
     tags: [`hh:${hid}:users`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
@@ -55,6 +56,7 @@ async function _listCategories(hid: string): Promise<CategoryRow[]> {
 export async function listCategories(hid: string): Promise<CategoryRow[]> {
   return unstable_cache(() => _listCategories(hid), ["categories", hid], {
     tags: [`hh:${hid}:categories`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
@@ -72,6 +74,7 @@ async function _listFixedCostMasters(hid: string): Promise<FixedCostMasterRow[]>
 export async function listFixedCostMasters(hid: string): Promise<FixedCostMasterRow[]> {
   return unstable_cache(() => _listFixedCostMasters(hid), ["fixed-cost-masters", hid], {
     tags: [`hh:${hid}:fixed-cost-masters`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
@@ -89,6 +92,7 @@ async function _listInvestmentAccounts(hid: string): Promise<InvestmentAccountRo
 export async function listInvestmentAccounts(hid: string): Promise<InvestmentAccountRow[]> {
   return unstable_cache(() => _listInvestmentAccounts(hid), ["investment-accounts", hid], {
     tags: [`hh:${hid}:investment-accounts`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
@@ -108,6 +112,7 @@ async function _listPaymentMethods(hid: string): Promise<PaymentMethodRow[]> {
 export async function listPaymentMethods(hid: string): Promise<PaymentMethodRow[]> {
   return unstable_cache(() => _listPaymentMethods(hid), ["payment-methods", hid], {
     tags: [`hh:${hid}:payment-methods`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
@@ -127,6 +132,7 @@ async function _listAllPaymentMethods(hid: string): Promise<PaymentMethodRow[]> 
 export async function listAllPaymentMethods(hid: string): Promise<PaymentMethodRow[]> {
   return unstable_cache(() => _listAllPaymentMethods(hid), ["payment-methods-all", hid], {
     tags: [`hh:${hid}:payment-methods`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
@@ -145,6 +151,7 @@ async function _listCashBalanceSnapshots(hid: string): Promise<CashBalanceSnapsh
 export async function listCashBalanceSnapshots(hid: string): Promise<CashBalanceSnapshotRow[]> {
   return unstable_cache(() => _listCashBalanceSnapshots(hid), ["cash-balance", hid], {
     tags: [`hh:${hid}:cash-balance`, `hh:${hid}`],
+    revalidate: 60,
   })();
 }
 
