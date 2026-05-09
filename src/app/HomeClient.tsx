@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import { Plus, SlidersHorizontal } from "lucide-react";
@@ -83,8 +83,15 @@ export default function HomeClient({
 }: Props) {
   const router = useRouter();
 
-  // Auto-refresh if the 20-day cycle has rolled over to a new month
+  // Auto-refresh if the 20-day cycle has rolled over to a new month.
+  // Guarded with a ref so it fires at most once per mount — without this,
+  // any subsequent re-render that remounts this component would trigger
+  // another router.refresh() and we've seen that compound into a
+  // history.replaceState() flood ("more than 100 times per 10 seconds").
+  const refreshedRef = useRef(false);
   useEffect(() => {
+    if (refreshedRef.current) return;
+    refreshedRef.current = true;
     const expected = monthKey(new Date());
     if (expected !== currentMonth) router.refresh();
   // eslint-disable-next-line react-hooks/exhaustive-deps

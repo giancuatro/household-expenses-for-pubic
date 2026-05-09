@@ -47,13 +47,16 @@ export async function bootstrapHousehold(input: z.infer<typeof Schema>) {
     .single();
   if (hhErr || !hh) throw new Error(hhErr?.message ?? "世帯の作成に失敗しました。");
 
-  // Add user as owner
-  await admin.from("household_members").insert({
+  // Add user as owner — surface errors so a half-constructed household
+  // doesn't leave the user in a redirect loop (member missing → getSession
+  // returns null → /login → middleware redirects authed user to / → loop).
+  const { error: memberErr } = await admin.from("household_members").insert({
     household_id: hh.id,
     auth_user_id: userId,
     role: "owner",
     display_name: displayName ?? null,
   });
+  if (memberErr) throw new Error(`メンバー登録に失敗: ${memberErr.message}`);
 
   // Seed default categories
   const seed = [
