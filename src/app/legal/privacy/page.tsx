@@ -31,7 +31,20 @@ export default function PrivacyPage() {
         <li>障害発生時の調査</li>
       </ul>
 
-      <h2 className="text-lg font-semibold mt-6">3. 第三者提供</h2>
+      <h2 className="text-lg font-semibold mt-6">3. 運営者によるアクセスについて（重要）</h2>
+      <p>
+        本サービスは OSS（オープンソース）として公開されており、誰でも自分の Vercel + Supabase アカウントで自分専用のインスタンスをデプロイできます。
+        本ページが表示されているこのインスタンスを運営している者（以下「運営者」）は、Supabase プロジェクトの所有者として技術的にデータベースの全データにアクセス可能です（これは Notion / Slack / Asana など多くの SaaS と同じ構造です）。
+      </p>
+      <ul className="list-disc list-inside space-y-1">
+        <li>運営者は通常、ユーザーのデータを閲覧しません。</li>
+        <li>ただし、不正利用調査・障害対応・法的要請への対応などの正当な理由がある場合に限り閲覧する場合があります。</li>
+        <li>プライバシーを最大化したい場合は、本リポジトリを Fork して<strong>自分専用のインスタンスを自分でデプロイ</strong>することをおすすめします。詳細は{" "}
+          <a href="https://github.com/giancuatro/household-expenses-for-pubic#セットアップ手順" target="_blank" rel="noreferrer" className="text-primary underline">README のセットアップ手順</a>
+          を参照。</li>
+      </ul>
+
+      <h2 className="text-lg font-semibold mt-6">4. 第三者提供</h2>
       <p>
         ユーザーの個人情報を本人の同意なく第三者に提供することはありません。ただし、以下のインフラサービスを利用しているため、それらの事業者が定めるプライバシーポリシーが適用されます。
       </p>
@@ -47,12 +60,12 @@ export default function PrivacyPage() {
         </li>
       </ul>
 
-      <h2 className="text-lg font-semibold mt-6">4. データの保管期間</h2>
+      <h2 className="text-lg font-semibold mt-6">5. データの保管期間</h2>
       <p>
         ユーザーがアカウント削除を実行するまで、本サービスのデータベースに保管されます。アカウント削除リクエスト後は、関連するすべてのデータを物理削除します（30 日以内の遅延あり）。
       </p>
 
-      <h2 className="text-lg font-semibold mt-6">5. ユーザーの権利</h2>
+      <h2 className="text-lg font-semibold mt-6">6. ユーザーの権利</h2>
       <p>
         ユーザーは設定画面の「データ管理」タブから以下を実行できます。
       </p>
@@ -61,7 +74,7 @@ export default function PrivacyPage() {
         <li>アカウント / 世帯の削除</li>
       </ul>
 
-      <h2 className="text-lg font-semibold mt-6">6. お問い合わせ</h2>
+      <h2 className="text-lg font-semibold mt-6">7. お問い合わせ</h2>
       <p>
         本ポリシーに関するお問い合わせは、本サービスのリポジトリの Issue 経由でお願いします。
       </p>
