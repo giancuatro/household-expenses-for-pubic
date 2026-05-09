@@ -15,6 +15,7 @@ const PUBLIC_PATHS = [
   "/login",
   "/signup",
   "/auth",
+  "/legal",
   "/icons",
   "/manifest.webmanifest",
 ];

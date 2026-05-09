@@ -199,6 +199,13 @@ export default function SignupPage() {
                 {error}
               </p>
             )}
+            <p className="text-xs text-muted-foreground">
+              アカウントを作成することで{" "}
+              <Link href="/legal/terms" target="_blank" className="text-primary underline">利用規約</Link>
+              {" "}と{" "}
+              <Link href="/legal/privacy" target="_blank" className="text-primary underline">プライバシーポリシー</Link>
+              {" "}に同意したものとみなされます。
+            </p>
             <button type="submit" className="btn-primary w-full" disabled={loading}>
               {loading ? "作成中..." : authedUser ? "世帯を作成" : "アカウント作成"}
             </button>

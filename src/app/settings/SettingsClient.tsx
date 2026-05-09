@@ -73,7 +73,7 @@ export default function SettingsClient({
       {err && <p className="text-sm text-destructive">{err}</p>}
 
       <Tabs defaultValue="household" className="w-full">
-        <TabsList className="w-full grid grid-cols-4 sm:grid-cols-7 h-auto">
+        <TabsList className="w-full grid grid-cols-4 sm:grid-cols-8 h-auto">
           <TabsTrigger value="household">世帯</TabsTrigger>
           <TabsTrigger value="users">メンバー</TabsTrigger>
           <TabsTrigger value="categories">カテゴリ</TabsTrigger>
@@ -81,6 +81,7 @@ export default function SettingsClient({
           <TabsTrigger value="payments">支払方法</TabsTrigger>
           <TabsTrigger value="cash">現金残高</TabsTrigger>
           <TabsTrigger value="accounts">証券口座</TabsTrigger>
+          <TabsTrigger value="data">データ管理</TabsTrigger>
         </TabsList>
 
         <TabsContent value="household">
@@ -208,7 +209,118 @@ export default function SettingsClient({
             <AddAccountForm users={users} start={start} onError={setErr} pending={pending} />
           </section>
         </TabsContent>
+
+        <TabsContent value="data">
+          <DataManagement role={household.role} />
+        </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/* -------------------- Data management (DSAR) -------------------- */
+function DataManagement({ role }: { role: "owner" | "editor" | "viewer" }) {
+  const [confirming, setConfirming] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onDelete() {
+    if (confirmText !== "DELETE") {
+      setError('"DELETE" と入力してください。');
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/me/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: "DELETE" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "削除に失敗しました。");
+      window.location.href = "/login";
+    } catch (e: unknown) {
+      setDeleting(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <section className="card space-y-3">
+        <h2 className="font-semibold">データのエクスポート</h2>
+        <p className="text-sm text-muted-foreground">
+          あなたが所属する世帯の全データを ZIP（JSON + CSV）でダウンロードできます。バックアップや、本サービスを離れる際のデータ持ち出しに利用してください。
+        </p>
+        <a href="/api/me/export" className="btn-primary text-sm inline-block w-full sm:w-auto text-center">
+          ZIP をダウンロード
+        </a>
+      </section>
+
+      <section className="card space-y-3 border-destructive/30">
+        <h2 className="font-semibold text-destructive">アカウント削除</h2>
+        <p className="text-sm text-muted-foreground">
+          アカウントを削除すると、ログイン情報が抹消されます。
+          {role === "owner"
+            ? " あなたが世帯の唯一のオーナーである場合、世帯と全データ（取引・カテゴリ・固定費・投資・現金残高）も同時に削除されます。"
+            : " 世帯のデータは他のメンバーが利用継続します。あなたのメンバー権限のみ削除されます。"}
+          {" "}この操作は元に戻せません。
+        </p>
+
+        {!confirming ? (
+          <button
+            onClick={() => setConfirming(true)}
+            className="btn-danger text-sm w-full sm:w-auto"
+          >
+            削除を開始する
+          </button>
+        ) : (
+          <div className="space-y-2">
+            <label className="block space-y-1">
+              <span className="text-sm">
+                確認のため <code className="font-mono bg-muted px-1 py-0.5 rounded">DELETE</code> と入力してください
+              </span>
+              <input
+                className="input"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder="DELETE"
+                autoFocus
+              />
+            </label>
+            {error && (
+              <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={onDelete}
+                disabled={deleting || confirmText !== "DELETE"}
+                className="btn-danger text-sm flex-1"
+              >
+                {deleting ? "削除中..." : "アカウントを完全に削除"}
+              </button>
+              <button
+                onClick={() => { setConfirming(false); setConfirmText(""); setError(null); }}
+                disabled={deleting}
+                className="btn-ghost text-sm"
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <p className="text-xs text-muted-foreground text-center">
+        詳しくは{" "}
+        <a href="/legal/privacy" className="text-primary underline">プライバシーポリシー</a>
+        {" "}/{" "}
+        <a href="/legal/terms" className="text-primary underline">利用規約</a>
+      </p>
     </div>
   );
 }

@@ -73,6 +73,18 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <main className="flex-1 mx-auto w-full max-w-5xl px-2 sm:px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+5rem)] md:pb-8">
             {children}
           </main>
+          <footer className="hidden md:flex justify-center gap-4 py-4 text-xs text-muted-foreground border-t border-border">
+            <Link href="/legal/privacy" className="hover:underline">プライバシーポリシー</Link>
+            <Link href="/legal/terms" className="hover:underline">利用規約</Link>
+            <a
+              href="https://github.com/giancuatro/household-expenses-for-pubic"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:underline"
+            >
+              GitHub
+            </a>
+          </footer>
           {authed && <BottomTabNav />}
           <Toaster />
           <SwRegister />
