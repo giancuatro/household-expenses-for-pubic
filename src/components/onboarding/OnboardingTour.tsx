@@ -7,8 +7,11 @@ import { Check, Copy, Users, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { completeOnboarding } from "@/app/actions/auth";
 import { createOpenInvite } from "@/app/actions/settings";
+import { RecordTransactionIllustration } from "./illustrations/RecordTransactionIllustration";
+import { HouseholdSharingIllustration } from "./illustrations/HouseholdSharingIllustration";
+import { MonthlyReportIllustration } from "./illustrations/MonthlyReportIllustration";
+import { DashboardIllustration } from "./illustrations/DashboardIllustration";
 import { CashFlowIllustration } from "./illustrations/CashFlowIllustration";
-import { CreditCardIllustration } from "./illustrations/CreditCardIllustration";
 import { InvestmentLinkIllustration } from "./illustrations/InvestmentLinkIllustration";
 
 type Mode = "household" | "individual" | null;
@@ -21,20 +24,47 @@ type Slide = {
 
 const SLIDES: Slide[] = [
   {
-    illustration: CashFlowIllustration,
-    title: "現金スナップショットで残高を追跡",
+    illustration: RecordTransactionIllustration,
+    title: "+ ボタンから収支を 3 ステップで記録",
     body: (
       <>
-        現在の現金残高（銀行・財布合算）を 1 度入力するだけで、その後の収入・支出・カード引落を自動加減算してリアルタイム残高が表示されます。残高がずれたら新しいスナップショットを追加して再アンカーできます。
+        画面右下の <strong>＋</strong> ボタンを押すと、入力シートが下から開きます。①支払い者 → ②金額 → ③種類・項目 を選んで「保存」を押すと、即座に取引一覧の先頭に新しい行が追加されます。収入・支出・特別費・投資もすべてここから入力できます。
       </>
     ),
   },
   {
-    illustration: CreditCardIllustration,
-    title: "クレカの締め日と支払日でキャッシュフロー予測",
+    illustration: HouseholdSharingIllustration,
+    title: "世帯メンバーで支出を分けて管理",
     body: (
       <>
-        クレジットカードに締め日・支払日・支払月オフセットを設定すると、カード請求のタイミングを正確に反映した 60 日先までの現金残高予測が見られます。「来月の引落で残高は足りるか？」が一目でわかります。
+        共同支出 / 個人支出 / 立替（他人の分の代表払い）を分けて記録できます。立替は精算済みにマークすると、メンバーごとの「立替差額」と「家計全体の収支」がそれぞれ自動集計され、誰が誰にいくら払うべきかがホーム画面ですぐに分かります。
+      </>
+    ),
+  },
+  {
+    illustration: MonthlyReportIllustration,
+    title: "月次レポートで予算と支出を一覧",
+    body: (
+      <>
+        毎月のサイクル（締め日基準）ごとに、共同変動費の各カテゴリの支出・予算・残額が表として並びます。予算を超えた行は赤くハイライトされ、月初〜月末までの収入・支出・収支も一目で確認できます。前月・前々月への切替も可能。
+      </>
+    ),
+  },
+  {
+    illustration: DashboardIllustration,
+    title: "ダッシュボードで長期トレンドを把握",
+    body: (
+      <>
+        月別の収入・支出・収支の推移、カテゴリ別の月次トレンド、支出割合のドーナツ、予算達成率のヒートマップ（直近 6 ヶ月）、資産推移、キャッシュフロー予測まで、家計全体を多角的に分析できる複数のチャートが揃っています。
+      </>
+    ),
+  },
+  {
+    illustration: CashFlowIllustration,
+    title: "現金残高 + クレカ設定 → CF 予測",
+    body: (
+      <>
+        ❶ 設定で現金残高をスナップショット登録 → ❷ クレジットカードに締め日・支払日を設定 → ❸ ダッシュボードで「今後 60 日のキャッシュフロー予測」が見られます。クレカ引落の段差まで正確に反映されるので、「来月の引落で残高は足りるか」が一目で分かります。
       </>
     ),
   },
@@ -43,7 +73,7 @@ const SLIDES: Slide[] = [
     title: "投資の売買が自動で現金残高に反映",
     body: (
       <>
-        投資タブで売買を記録すると、買い＝支出 / 売り＝収入として家計簿側にも自動でリンクされ、現金残高とキャッシュフロー予測の両方に反映されます。投資と家計を二重入力する必要はありません。
+        投資タブで売買を記録すると、買い＝支出 / 売り＝収入として家計簿側にも自動連動し、現金残高・CF 予測・保有銘柄リストの 3 ヶ所に同時反映されます。投資と家計を二重入力する手間がなく、為替も加重平均で JPY 換算されます。
       </>
     ),
   },
