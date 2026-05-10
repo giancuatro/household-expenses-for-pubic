@@ -28,42 +28,42 @@ export function HouseholdSharingIllustration() {
         取引一覧
       </text>
 
-      {/* Row 1: 共同 (variable) — Gianco paid 食費 1,200 */}
+      {/* Row 1: 共同 (variable) — Member A paid 食費 1,200 */}
       <g className="sh-row sh-row-1">
         <text x="20" y="50" fontSize="9" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">5/10</text>
-        <rect x="42" y="40" width="38" height="14" rx="7" fill="hsl(var(--primary))" opacity="0.18" />
-        <text x="61" y="50" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary))" fontWeight="600">
-          ジャンコ
+        <rect x="42" y="40" width="46" height="14" rx="7" fill="hsl(var(--primary))" opacity="0.18" />
+        <text x="65" y="50" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary))" fontWeight="600">
+          メンバーA
         </text>
-        <rect x="84" y="40" width="36" height="14" rx="7" fill="hsl(var(--success))" opacity="0.18" />
-        <text x="102" y="50" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--success))" fontWeight="600">食費</text>
-        <rect x="124" y="40" width="32" height="14" rx="7" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
-        <text x="140" y="50" fontSize="8" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">共同</text>
+        <rect x="92" y="40" width="36" height="14" rx="7" fill="hsl(var(--success))" opacity="0.18" />
+        <text x="110" y="50" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--success))" fontWeight="600">食費</text>
+        <rect x="132" y="40" width="32" height="14" rx="7" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
+        <text x="148" y="50" fontSize="8" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">共同</text>
         <text x="294" y="50" fontSize="11" textAnchor="end" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--foreground))">¥1,200</text>
       </g>
 
-      {/* Row 2: 個人 — Hika paid for herself 1,800 */}
+      {/* Row 2: 個人 — Member B paid for self 1,800 */}
       <g className="sh-row sh-row-2">
         <text x="20" y="74" fontSize="9" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">5/9</text>
-        <rect x="42" y="64" width="30" height="14" rx="7" fill="hsl(var(--success))" opacity="0.18" />
-        <text x="57" y="74" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--success))" fontWeight="600">ひか</text>
-        <rect x="76" y="64" width="44" height="14" rx="7" fill="hsl(var(--accent))" />
-        <text x="98" y="74" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">個人支出</text>
-        <rect x="124" y="64" width="32" height="14" rx="7" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
-        <text x="140" y="74" fontSize="8" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">個人</text>
+        <rect x="42" y="64" width="46" height="14" rx="7" fill="hsl(var(--success))" opacity="0.18" />
+        <text x="65" y="74" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--success))" fontWeight="600">メンバーB</text>
+        <rect x="92" y="64" width="44" height="14" rx="7" fill="hsl(var(--accent))" />
+        <text x="114" y="74" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">個人支出</text>
+        <rect x="140" y="64" width="32" height="14" rx="7" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
+        <text x="156" y="74" fontSize="8" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">個人</text>
         <text x="294" y="74" fontSize="11" textAnchor="end" fontFamily="system-ui" fontWeight="600" fill="hsl(var(--muted-foreground))">¥1,800</text>
       </g>
 
-      {/* Row 3: 立替 — Gianco paid Hika's share, 4,000 */}
+      {/* Row 3: 立替 — Member A paid Member B's share, 4,000 */}
       <g className="sh-row sh-row-3">
         <text x="20" y="98" fontSize="9" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">5/8</text>
-        <rect x="42" y="88" width="38" height="14" rx="7" fill="hsl(var(--primary))" opacity="0.18" />
-        <text x="61" y="98" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary))" fontWeight="600">
-          ジャンコ
+        <rect x="42" y="88" width="46" height="14" rx="7" fill="hsl(var(--primary))" opacity="0.18" />
+        <text x="65" y="98" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary))" fontWeight="600">
+          メンバーA
         </text>
-        <text x="86" y="98" fontSize="11" fontFamily="system-ui">🔄</text>
-        <rect x="98" y="88" width="34" height="14" rx="7" fill="hsl(var(--warning))" opacity="0.22" className="sh-advance-chip" />
-        <text x="115" y="98" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--warning))" fontWeight="700">立替</text>
+        <text x="94" y="98" fontSize="11" fontFamily="system-ui">🔄</text>
+        <rect x="106" y="88" width="34" height="14" rx="7" fill="hsl(var(--warning))" opacity="0.22" className="sh-advance-chip" />
+        <text x="123" y="98" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--warning))" fontWeight="700">立替</text>
         <text x="294" y="98" fontSize="11" textAnchor="end" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--foreground))">¥4,000</text>
         {/* Settled tick — appears after the row */}
         <g className="sh-settled">
@@ -79,19 +79,19 @@ export function HouseholdSharingIllustration() {
       <g className="sh-summary">
         <text x="20" y="155" fontSize="10" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--foreground))">今月の収支</text>
 
-        {/* Card: Gianco */}
+        {/* Card: Member A */}
         <rect x="20" y="164" width="86" height="58" rx="8" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
         <rect x="20" y="164" width="3" height="58" fill="hsl(var(--primary))" />
-        <text x="30" y="180" fontSize="9" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--primary))">ジャンコ</text>
+        <text x="30" y="180" fontSize="9" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--primary))">メンバーA</text>
         <text x="30" y="195" fontSize="8" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">支出</text>
         <text x="100" y="195" fontSize="9" textAnchor="end" fontFamily="system-ui" fontWeight="600" fill="hsl(var(--foreground))">¥5,200</text>
         <text x="30" y="208" fontSize="8" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">立替差</text>
         <text x="100" y="208" fontSize="9" textAnchor="end" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--success))">+¥4,000</text>
 
-        {/* Card: Hika */}
+        {/* Card: Member B */}
         <rect x="116" y="164" width="86" height="58" rx="8" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
         <rect x="116" y="164" width="3" height="58" fill="hsl(var(--success))" />
-        <text x="126" y="180" fontSize="9" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--success))">ひか</text>
+        <text x="126" y="180" fontSize="9" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--success))">メンバーB</text>
         <text x="126" y="195" fontSize="8" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">支出</text>
         <text x="196" y="195" fontSize="9" textAnchor="end" fontFamily="system-ui" fontWeight="600" fill="hsl(var(--foreground))">¥1,800</text>
         <text x="126" y="208" fontSize="8" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">立替差</text>
@@ -125,8 +125,8 @@ export function HouseholdSharingIllustration() {
         .sh-illustration .sh-row-3 { animation-delay: 0.8s !important; }
 
         @keyframes sh-pulse {
-          0%, 30%, 50%, 100% { transform: scale(1); }
-          40%                { transform: scale(1.18); }
+          0%, 30%, 50%, 100% { transform: scale(1); opacity: 0.22; }
+          38%, 42%           { transform: scale(1.05); opacity: 0.45; }
         }
         @keyframes sh-settled {
           0%, 50%  { opacity: 0; transform: translateX(8px); }

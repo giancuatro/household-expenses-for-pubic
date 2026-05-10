@@ -136,9 +136,9 @@ export function InvestmentLinkIllustration() {
           100% { opacity: 1; transform: translateY(0); }
         }
         @keyframes inv-pulse {
-          0%, 14%   { transform: scale(1); }
-          17%, 20%  { transform: scale(1.08); }
-          24%, 100% { transform: scale(1); }
+          0%, 14%   { transform: scale(1); opacity: 1; }
+          17%, 20%  { transform: scale(0.97); opacity: 0.8; }
+          24%, 100% { transform: scale(1); opacity: 1; }
         }
         @keyframes inv-coin-drop {
           0%, 22%   { opacity: 0; transform: translateY(-12px); }

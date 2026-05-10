@@ -98,8 +98,13 @@ export function OnboardingTour({ onClose }: OnboardingTourProps = {}) {
   const [copied, setCopied] = React.useState(false);
   const [finishing, setFinishing] = React.useState(false);
 
-  const total = SLIDES.length + 1; // +1 final mode-select slide
+  // The 世帯/個人 picker only matters at first-time onboarding. When replaying
+  // from settings (onClose given), the household has already been set up — skip
+  // the mode slide.
+  const isReplay = onClose !== undefined;
+  const total = SLIDES.length + (isReplay ? 0 : 1);
   const isLast = step === total - 1;
+  const onModeSlide = !isReplay && step >= SLIDES.length;
 
   async function finish() {
     if (finishing) return;
@@ -146,7 +151,7 @@ export function OnboardingTour({ onClose }: OnboardingTourProps = {}) {
           </button>
         </div>
 
-        {step < SLIDES.length ? (
+        {!onModeSlide ? (
           <FeatureSlide slide={SLIDES[step]} />
         ) : (
           <ModeSlide
@@ -179,8 +184,11 @@ export function OnboardingTour({ onClose }: OnboardingTourProps = {}) {
               次へ
             </Button>
           ) : (
-            <Button onClick={finish} disabled={finishing || mode === null}>
-              {finishing ? "..." : "始める"}
+            <Button
+              onClick={finish}
+              disabled={finishing || (onModeSlide && mode === null)}
+            >
+              {finishing ? "..." : isReplay ? "閉じる" : "始める"}
             </Button>
           )}
         </div>
