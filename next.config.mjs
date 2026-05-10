@@ -59,6 +59,9 @@ const nextConfig = {
       { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
       // Drop access to sensors / payment APIs we don't use.
       { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+      // Block legacy Adobe Flash / PDF cross-domain policy lookups. We never
+      // serve a crossdomain.xml, so deny by header rather than by 404.
+      { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
       { key: "Content-Security-Policy", value: csp },
     ];
 

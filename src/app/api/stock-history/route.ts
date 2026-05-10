@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { STOCK_LIST } from "@/lib/stockList";
+import { getAuthUser } from "@/lib/auth";
+
+const TICKER_RE = /^[A-Za-z0-9.\-]{1,12}$/;
+const FROM_RE = /^\d{4}-\d{2}(-\d{2})?$/;
 
 /**
  * GET /api/stock-history?ticker=MSFT&from=2023-01&interval=1mo
@@ -22,11 +26,16 @@ type Interval = "1d" | "1wk" | "1mo";
 const VALID_INTERVALS: Interval[] = ["1d", "1wk", "1mo"];
 
 export async function GET(req: NextRequest) {
+  const user = await getAuthUser();
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const ticker = req.nextUrl.searchParams.get("ticker")?.trim();
   const from = req.nextUrl.searchParams.get("from")?.trim(); // YYYY-MM or YYYY-MM-DD
   const intervalParam = req.nextUrl.searchParams.get("interval")?.trim() as Interval | undefined;
   const interval: Interval = VALID_INTERVALS.includes(intervalParam as Interval) ? (intervalParam as Interval) : "1mo";
   if (!ticker) return NextResponse.json({ error: "ticker required" }, { status: 400 });
+  if (!TICKER_RE.test(ticker)) return NextResponse.json({ error: "invalid ticker" }, { status: 400 });
+  if (from && !FROM_RE.test(from)) return NextResponse.json({ error: "invalid from" }, { status: 400 });
 
   const item = STOCK_LIST.find((s) => s.ticker.toLowerCase() === ticker.toLowerCase());
   const yahooTicker = item?.yahooTicker ?? ticker;

@@ -11,11 +11,14 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   const expected = process.env.CRON_SECRET;
-  if (expected) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${expected}`) {
-      return NextResponse.json({ ok: false }, { status: 401 });
-    }
+  // Fail closed when CRON_SECRET isn't configured — anonymous traffic should
+  // never be able to spin through every household and rewrite fixed-cost rows.
+  if (!expected) {
+    return NextResponse.json({ ok: false, error: "cron not configured" }, { status: 503 });
+  }
+  const auth = req.headers.get("authorization");
+  if (auth !== `Bearer ${expected}`) {
+    return NextResponse.json({ ok: false }, { status: 401 });
   }
   const admin = getSupabaseAdmin();
   const { data: households } = await admin.from("households").select("id");
