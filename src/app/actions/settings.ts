@@ -36,6 +36,19 @@ export async function renameUser(id: string, name: string) {
   revalidateTag(`hh:${hid}:users`);
 }
 
+export async function updateUserColor(id: string, color_hex: string | null) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("users")
+    .update({ color_hex })
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:users`);
+}
+
 export async function deleteUser(id: string) {
   const { household } = await requireSession();
   const hid = household.household_id;
@@ -54,6 +67,8 @@ export async function deleteUser(id: string) {
 }
 
 /* -------------------- Categories -------------------- */
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
 const CategorySchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().min(1).max(40),
@@ -61,6 +76,7 @@ const CategorySchema = z.object({
   budget_amount: z.number().int().min(0),
   sort_order: z.number().int().default(0),
   is_active: z.boolean().default(true),
+  color_hex: z.string().regex(HEX_RE).nullable().optional(),
 });
 
 export async function upsertCategory(input: z.infer<typeof CategorySchema>) {
@@ -68,31 +84,58 @@ export async function upsertCategory(input: z.infer<typeof CategorySchema>) {
   const hid = household.household_id;
   const p = CategorySchema.parse(input);
   const sb = getSupabaseServer();
+  const payload = {
+    name: p.name,
+    type: p.type,
+    budget_amount: p.budget_amount,
+    sort_order: p.sort_order,
+    is_active: p.is_active,
+    ...(p.color_hex !== undefined ? { color_hex: p.color_hex } : {}),
+  };
   if (p.id) {
     const { error } = await sb
       .from("expense_categories")
-      .update({
-        name: p.name,
-        type: p.type,
-        budget_amount: p.budget_amount,
-        sort_order: p.sort_order,
-        is_active: p.is_active,
-      })
+      .update(payload)
       .eq("household_id", hid)
       .eq("id", p.id);
     if (error) throw new Error(error.message);
   } else {
     const { error } = await sb.from("expense_categories").insert({
       household_id: hid,
-      name: p.name,
-      type: p.type,
-      budget_amount: p.budget_amount,
-      sort_order: p.sort_order,
-      is_active: p.is_active,
+      ...payload,
     });
     if (error) throw new Error(error.message);
   }
   revalidateTag(`hh:${hid}:categories`);
+}
+
+const KindColorSchema = z.object({
+  kind: z.enum([
+    "income",
+    "fixed",
+    "loan",
+    "special",
+    "advance",
+    "investment",
+    "transfer_in",
+    "transfer_out",
+  ]),
+  color_hex: z.string().regex(HEX_RE),
+});
+
+export async function upsertKindColor(input: z.infer<typeof KindColorSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = KindColorSchema.parse(input);
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("kind_colors")
+    .upsert(
+      { household_id: hid, kind: p.kind, color_hex: p.color_hex },
+      { onConflict: "household_id,kind" },
+    );
+  if (error) throw new Error(error.message);
+  revalidateTag(`hh:${hid}:kind-colors`);
 }
 
 export async function deleteCategory(id: string) {
@@ -386,6 +429,32 @@ export async function inviteMember(input: z.infer<typeof InviteSchema>) {
   const { error } = await admin.from("household_invitations").insert({
     household_id: household.household_id,
     email: p.email.toLowerCase(),
+    role: p.role,
+    token,
+    invited_by: user.id,
+  });
+  if (error) throw new Error(error.message);
+  return { token };
+}
+
+const OpenInviteSchema = z.object({
+  role: z.enum(["owner", "editor", "viewer"]).default("editor"),
+});
+
+/**
+ * Create an "open" invitation that is not tied to a specific email address.
+ * The owner shares the resulting URL via any channel, and whoever opens it
+ * can sign up with their own email/password and join this household.
+ */
+export async function createOpenInvite(input: z.infer<typeof OpenInviteSchema>) {
+  const { user, household } = await requireSession();
+  if (household.role !== "owner") throw new Error("リンクの発行はオーナーのみ可能です。");
+  const p = OpenInviteSchema.parse(input);
+  const token = randomBytes(24).toString("base64url");
+  const admin = getSupabaseAdmin();
+  const { error } = await admin.from("household_invitations").insert({
+    household_id: household.household_id,
+    email: "",
     role: p.role,
     token,
     invited_by: user.id,

@@ -3,6 +3,7 @@ import {
   listCashBalanceSnapshots,
   listCategories,
   listFixedCostMasters,
+  listKindColors,
   listPaymentMethods,
   listTransactionsForMonth,
   listUsers,
@@ -16,6 +17,8 @@ export const dynamic = "force-dynamic";
 export default async function HomePage() {
   const { household } = await requireSession();
   const hid = household.household_id;
+  const showOnboarding =
+    household.role === "owner" && !household.household.onboarding_completed_at;
   const ym = monthKey();
   const prevYm = addMonths(ym, -1);
   const [
@@ -27,6 +30,7 @@ export default async function HomePage() {
     fixedCostMasters,
     paymentMethods,
     cashSnapshots,
+    kindColors,
   ] = await Promise.all([
     listUsers(hid),
     listCategories(hid),
@@ -36,6 +40,7 @@ export default async function HomePage() {
     listFixedCostMasters(hid),
     listPaymentMethods(hid).catch(() => []),
     listCashBalanceSnapshots(hid).catch(() => []),
+    listKindColors(hid).catch(() => []),
   ]);
 
   return (
@@ -48,6 +53,8 @@ export default async function HomePage() {
       fixedCostMasters={fixedCostMasters}
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
+      kindColors={kindColors}
+      showOnboarding={showOnboarding}
       currentMonth={ym}
     />
   );

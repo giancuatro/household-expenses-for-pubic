@@ -19,7 +19,13 @@ export interface HouseholdMembership {
   household_id: string;
   role: "owner" | "editor" | "viewer";
   display_name: string | null;
-  household: { id: string; name: string; currency: string; locale: string };
+  household: {
+    id: string;
+    name: string;
+    currency: string;
+    locale: string;
+    onboarding_completed_at: string | null;
+  };
 }
 
 export interface SessionContext {
@@ -59,7 +65,7 @@ export const getSession = cache(async (): Promise<SessionContext | null> => {
   const { data: rows, error } = await admin
     .from("household_members")
     .select(
-      "household_id, role, display_name, household:households(id, name, currency, locale)",
+      "household_id, role, display_name, household:households(id, name, currency, locale, onboarding_completed_at)",
     )
     .eq("auth_user_id", user.id);
   if (error) throw new Error(error.message);

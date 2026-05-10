@@ -33,18 +33,27 @@ type StockHistoryResponse = {
  *
  * Daily granularity carries forward the last known price for weekends/holidays so the
  * series is continuous. Months earlier than a ticker's first trade are 0.
+ *
+ * If `livePrices` is provided, an additional "today" data point is appended whose
+ * value uses the live price per ticker — this keeps the chart's right-most value
+ * consistent with the live total displayed on the investment tab. (Without this,
+ * the chart's latest point is yesterday's close (daily) or last-month close
+ * (monthly), causing a visible mismatch.)
  */
 export async function buildAssetHistory({
   trades,
   holdings,
   granularity = "monthly",
   fromDate,
+  livePrices,
 }: {
   trades: InvestmentTransactionRow[];
   holdings: InvestmentHoldingRow[];
   granularity?: Granularity;
   /** Optional cutoff: only generate rows from this date forward (YYYY-MM or YYYY-MM-DD). */
   fromDate?: string;
+  /** Optional live prices per ticker (USD or JPY, before priceUnit normalization). */
+  livePrices?: Map<string, number>;
 }): Promise<{ rows: AssetSeriesRow[]; tickers: TickerMeta[] }> {
   const allTickers = new Set<string>();
   for (const t of trades) allTickers.add(t.ticker);
@@ -175,6 +184,53 @@ export async function buildAssetHistory({
       row.total += value;
     }
     rows.push(row);
+  }
+
+  // If live prices are available, append (or overwrite) a final row keyed
+  // to "today" (daily) or the current month (monthly). Without this, the
+  // chart's most recent point uses yesterday's close (daily) or last-month
+  // close (monthly), which doesn't match the live total on the investment
+  // tab. This row makes the right edge of the chart agree with the live
+  // total exactly.
+  if (livePrices && livePrices.size > 0) {
+    const todayKey = (() => {
+      if (granularity === "monthly") {
+        return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+      }
+      return isoOf(today);
+    })();
+    const replayUpTo = isoOf(today);
+    const liveRow: AssetSeriesRow = { date: todayKey, total: 0 };
+    for (const ticker of tickers) {
+      const earliest = earliestByTicker.get(ticker);
+      if (!earliest || todayKey < earliest.slice(0, todayKey.length)) {
+        liveRow[ticker] = 0;
+        continue;
+      }
+      const quantity = quantityAt(trades, ticker, replayUpTo);
+      if (quantity <= 0) {
+        liveRow[ticker] = 0;
+        continue;
+      }
+      const priceUnit = getPriceUnit(ticker);
+      const live = livePrices.get(ticker);
+      const price =
+        live ??
+        resolvedPriceByTicker.get(ticker)?.get(todayKey) ??
+        fallbackPriceByTicker.get(ticker);
+      if (price === undefined) {
+        liveRow[ticker] = 0;
+        continue;
+      }
+      const fx = fxByTicker.get(ticker) ?? 1;
+      const value = Math.round((quantity * price * fx) / priceUnit);
+      liveRow[ticker] = value;
+      liveRow.total += value;
+    }
+    // Replace existing same-key row if present, otherwise append.
+    const existingIdx = rows.findIndex((r) => r.date === todayKey);
+    if (existingIdx >= 0) rows[existingIdx] = liveRow;
+    else rows.push(liveRow);
   }
 
   const tickerMetas: TickerMeta[] = tickers

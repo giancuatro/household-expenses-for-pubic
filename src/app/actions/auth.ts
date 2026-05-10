@@ -87,5 +87,48 @@ export async function bootstrapHousehold(input: z.infer<typeof Schema>) {
     auth_user_id: userId,
   });
 
+  // Seed default kind colors so the home transaction list and charts have
+  // consistent colors immediately after signup (the user can re-color any
+  // entry from settings → 外観).
+  const kindSeed = [
+    ["income", "#10b981"],
+    ["fixed", "#6366f1"],
+    ["loan", "#a855f7"],
+    ["special", "#ef4444"],
+    ["advance", "#f59e0b"],
+    ["investment", "#0ea5e9"],
+    ["transfer_in", "#22c55e"],
+    ["transfer_out", "#dc2626"],
+  ] as const;
+  await admin.from("kind_colors").insert(
+    kindSeed.map(([kind, color_hex]) => ({
+      household_id: hh.id,
+      kind,
+      color_hex,
+    })),
+  );
+
   return { household_id: hh.id };
+}
+
+/**
+ * Mark the current household's onboarding as completed. Called by the
+ * onboarding tour when the user finishes the last slide or taps "skip".
+ */
+export async function completeOnboarding() {
+  const sb = getSupabaseServer();
+  const { data: userData } = await sb.auth.getUser();
+  if (!userData?.user) throw new Error("認証セッションが見つかりません。");
+  const admin = getSupabaseAdmin();
+  const { data: members } = await admin
+    .from("household_members")
+    .select("household_id")
+    .eq("auth_user_id", userData.user.id)
+    .limit(1);
+  const hid = (members as { household_id: string }[] | null)?.[0]?.household_id;
+  if (!hid) return;
+  await admin
+    .from("households")
+    .update({ onboarding_completed_at: new Date().toISOString() })
+    .eq("id", hid);
 }

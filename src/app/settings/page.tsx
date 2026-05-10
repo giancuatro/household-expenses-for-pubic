@@ -5,6 +5,7 @@ import {
   listInvestmentAccounts,
   listAllPaymentMethods,
   listCashBalanceSnapshots,
+  listKindColors,
 } from "@/lib/queries";
 import { requireSession } from "@/lib/auth";
 import SettingsClient from "./SettingsClient";
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const { household, memberships } = await requireSession();
   const hid = household.household_id;
-  const [users, categories, fixed, investmentAccounts, paymentMethods, cashSnapshots] =
+  const [users, categories, fixed, investmentAccounts, paymentMethods, cashSnapshots, kindColors] =
     await Promise.all([
       listUsers(hid),
       listCategories(hid),
@@ -22,6 +23,7 @@ export default async function SettingsPage() {
       listInvestmentAccounts(hid),
       listAllPaymentMethods(hid).catch(() => []),
       listCashBalanceSnapshots(hid).catch(() => []),
+      listKindColors(hid).catch(() => []),
     ]);
   return (
     <SettingsClient
@@ -31,6 +33,7 @@ export default async function SettingsPage() {
       investmentAccounts={investmentAccounts}
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
+      kindColors={kindColors}
       household={household}
       memberships={memberships}
     />

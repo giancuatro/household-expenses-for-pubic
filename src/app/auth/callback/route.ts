@@ -69,11 +69,18 @@ export async function GET(req: NextRequest) {
       .select("id, household_id, role, email, expires_at, accepted_at")
       .eq("token", inviteToken)
       .maybeSingle();
+    const inviteEmail = ((invite?.email as string | null) ?? "").trim().toLowerCase();
+    const emailOk =
+      // Open invite (no specific email recorded) → anyone with the link can join.
+      inviteEmail === "" ||
+      // Targeted invite → require the signed-in email to match.
+      !user.email ||
+      inviteEmail === user.email.toLowerCase();
     if (
       invite &&
       !invite.accepted_at &&
       new Date(invite.expires_at as string) > new Date() &&
-      (!user.email || (invite.email as string).toLowerCase() === user.email.toLowerCase())
+      emailOk
     ) {
       await admin.from("household_members").upsert(
         {
@@ -88,6 +95,24 @@ export async function GET(req: NextRequest) {
         .from("household_invitations")
         .update({ accepted_at: new Date().toISOString() })
         .eq("id", invite.id);
+      // Ensure the new member also has a `users` row (payer label) so they
+      // can appear in the transaction-form payer dropdown immediately.
+      const { data: existingPayer } = await admin
+        .from("users")
+        .select("id")
+        .eq("household_id", invite.household_id)
+        .eq("auth_user_id", user.id)
+        .limit(1);
+      if ((existingPayer ?? []).length === 0) {
+        const fallbackName = displayName
+          || (user.email ? user.email.split("@")[0] : null)
+          || "メンバー";
+        await admin.from("users").insert({
+          household_id: invite.household_id,
+          name: fallbackName,
+          auth_user_id: user.id,
+        });
+      }
     }
   }
 
@@ -137,6 +162,23 @@ export async function GET(req: NextRequest) {
           name: displayName || (user.email ? user.email.split("@")[0] : "メンバー"),
           auth_user_id: user.id,
         });
+        const kindSeed = [
+          ["income", "#10b981"],
+          ["fixed", "#6366f1"],
+          ["loan", "#a855f7"],
+          ["special", "#ef4444"],
+          ["advance", "#f59e0b"],
+          ["investment", "#0ea5e9"],
+          ["transfer_in", "#22c55e"],
+          ["transfer_out", "#dc2626"],
+        ] as const;
+        await admin.from("kind_colors").insert(
+          kindSeed.map(([kind, color_hex]) => ({
+            household_id: hh.id,
+            kind,
+            color_hex,
+          })),
+        );
       }
     }
   }

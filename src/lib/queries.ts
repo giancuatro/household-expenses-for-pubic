@@ -9,6 +9,7 @@ import type {
   InvestmentAccountRow,
   PaymentMethodRow,
   CashBalanceSnapshotRow,
+  KindColorRow,
 } from "./types";
 
 /**
@@ -151,6 +152,23 @@ async function _listCashBalanceSnapshots(hid: string): Promise<CashBalanceSnapsh
 export async function listCashBalanceSnapshots(hid: string): Promise<CashBalanceSnapshotRow[]> {
   return unstable_cache(() => _listCashBalanceSnapshots(hid), ["cash-balance", hid], {
     tags: [`hh:${hid}:cash-balance`, `hh:${hid}`],
+    revalidate: 60,
+  })();
+}
+
+async function _listKindColors(hid: string): Promise<KindColorRow[]> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("kind_colors")
+    .select("kind, color_hex")
+    .eq("household_id", hid);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as KindColorRow[];
+}
+
+export async function listKindColors(hid: string): Promise<KindColorRow[]> {
+  return unstable_cache(() => _listKindColors(hid), ["kind-colors", hid], {
+    tags: [`hh:${hid}:kind-colors`, `hh:${hid}`],
     revalidate: 60,
   })();
 }
