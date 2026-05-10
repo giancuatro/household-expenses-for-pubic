@@ -67,12 +67,12 @@ export function RecordTransactionIllustration() {
         <g className="rec-new-row">
           <rect x="20" y="38" width="280" height="22" rx="6" fill="hsl(var(--primary))" opacity="0.10" />
           <text x="28" y="52" fontSize="9" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">5/10</text>
-          <rect x="50" y="42" width="32" height="14" rx="7" fill="hsl(var(--primary))" opacity="0.18" />
-          <text x="66" y="52" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary))" fontWeight="600">
-            ジャンコ
+          <rect x="50" y="42" width="44" height="14" rx="7" fill="hsl(var(--primary))" opacity="0.18" />
+          <text x="72" y="52" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary))" fontWeight="600">
+            メンバーA
           </text>
-          <rect x="86" y="42" width="40" height="14" rx="7" fill="hsl(var(--success))" opacity="0.18" />
-          <text x="106" y="52" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--success))" fontWeight="600">
+          <rect x="98" y="42" width="40" height="14" rx="7" fill="hsl(var(--success))" opacity="0.18" />
+          <text x="118" y="52" fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--success))" fontWeight="600">
             食費
           </text>
           <text x="294" y="52" fontSize="11" textAnchor="end" fontFamily="system-ui" fontWeight="700" fill="hsl(var(--foreground))">
@@ -86,12 +86,12 @@ export function RecordTransactionIllustration() {
             <text x="28" y={76 + i * 22} fontSize="9" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
               5/{9 - i}
             </text>
-            <rect x="50" y={66 + i * 22} width="32" height="14" rx="7" fill="hsl(var(--muted))" />
-            <text x="66" y={76 + i * 22} fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
-              {i % 2 === 0 ? "ひか" : "ジャンコ"}
+            <rect x="50" y={66 + i * 22} width="44" height="14" rx="7" fill="hsl(var(--muted))" />
+            <text x="72" y={76 + i * 22} fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
+              {i % 2 === 0 ? "メンバーB" : "メンバーA"}
             </text>
-            <rect x="86" y={66 + i * 22} width="40" height="14" rx="7" fill="hsl(var(--muted))" />
-            <text x="106" y={76 + i * 22} fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
+            <rect x="98" y={66 + i * 22} width="40" height="14" rx="7" fill="hsl(var(--muted))" />
+            <text x="118" y={76 + i * 22} fontSize="8.5" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
               {["外食", "移動", "日用品", "食費"][i]}
             </text>
             <text x="294" y={76 + i * 22} fontSize="10" textAnchor="end" fontFamily="system-ui" fontWeight="600" fill="hsl(var(--muted-foreground))">
@@ -118,13 +118,13 @@ export function RecordTransactionIllustration() {
         {/* ① 支払い者 */}
         <text x="20" y="84" fontSize="9" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">① 支払い者</text>
         <g className="rec-payer">
-          <rect x="20" y="90" width="60" height="18" rx="9" fill="hsl(var(--primary))" className="rec-payer-active" />
-          <text x="50" y="102" fontSize="9" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary-foreground))" fontWeight="600">
-            ジャンコ
+          <rect x="20" y="90" width="68" height="18" rx="9" fill="hsl(var(--primary))" className="rec-payer-active" />
+          <text x="54" y="102" fontSize="9" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--primary-foreground))" fontWeight="600">
+            メンバーA
           </text>
-          <rect x="86" y="90" width="60" height="18" rx="9" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
-          <text x="116" y="102" fontSize="9" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
-            ひか
+          <rect x="94" y="90" width="68" height="18" rx="9" fill="hsl(var(--card))" stroke="hsl(var(--border))" />
+          <text x="128" y="102" fontSize="9" textAnchor="middle" fontFamily="system-ui" fill="hsl(var(--muted-foreground))">
+            メンバーB
           </text>
         </g>
 
@@ -168,17 +168,18 @@ export function RecordTransactionIllustration() {
           transform: translateY(220px);
           animation: rec-sheet 7s ease-in-out infinite;
         }
-        .rec-illustration .rec-payer-active { animation: rec-pop 7s ease-out infinite; transform-origin: 50px 99px; transform-box: fill-box; }
-        .rec-illustration .rec-cat-active { animation: rec-pop-late 7s ease-out infinite; transform-origin: 90px 192px; transform-box: fill-box; }
-        .rec-illustration .rec-save { animation: rec-save-pulse 7s ease-in-out infinite; transform-origin: 260px 218px; transform-box: fill-box; }
+        .rec-illustration .rec-payer-active { animation: rec-pop 7s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+        .rec-illustration .rec-cat-active { animation: rec-pop-late 7s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+        .rec-illustration .rec-save { animation: rec-save-pulse 7s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
 
         @keyframes rec-fab {
-          0%, 8%   { transform: scale(1); opacity: 1; }
-          14%      { transform: scale(1.18); }
-          22%      { transform: scale(1); opacity: 0; }
-          70%      { opacity: 0; }
-          78%      { opacity: 1; transform: scale(1); }
-          100%     { transform: scale(1); opacity: 1; }
+          0%, 10%   { transform: scale(1); opacity: 1; }
+          13%, 16%  { transform: scale(0.97); opacity: 0.78; }
+          20%       { transform: scale(1); opacity: 1; }
+          22%       { transform: scale(1); opacity: 0; }
+          70%       { opacity: 0; }
+          78%       { opacity: 1; transform: scale(1); }
+          100%      { transform: scale(1); opacity: 1; }
         }
         @keyframes rec-sheet {
           0%, 14% { transform: translateY(220px); }
@@ -187,24 +188,24 @@ export function RecordTransactionIllustration() {
           100%     { transform: translateY(220px); }
         }
         @keyframes rec-pop {
-          0%, 26% { transform: scale(0.6); opacity: 0; }
-          32%     { transform: scale(1.12); opacity: 1; }
+          0%, 26% { transform: scale(0.85); opacity: 0; }
+          32%     { transform: scale(1.04); opacity: 1; }
           40%, 60% { transform: scale(1); opacity: 1; }
           70%      { opacity: 0; }
           100%     { opacity: 0; }
         }
         @keyframes rec-pop-late {
-          0%, 44% { transform: scale(0.6); opacity: 0; }
-          50%     { transform: scale(1.12); opacity: 1; }
+          0%, 44% { transform: scale(0.85); opacity: 0; }
+          50%     { transform: scale(1.04); opacity: 1; }
           56%, 60% { transform: scale(1); opacity: 1; }
           70%      { opacity: 0; }
           100%     { opacity: 0; }
         }
         @keyframes rec-save-pulse {
-          0%, 56% { transform: scale(1); }
-          60%     { transform: scale(1.06); }
-          64%     { transform: scale(1); }
-          100%    { transform: scale(1); }
+          0%, 56% { transform: scale(1); opacity: 1; }
+          60%, 62%{ transform: scale(0.97); opacity: 0.8; }
+          66%     { transform: scale(1); opacity: 1; }
+          100%    { transform: scale(1); opacity: 1; }
         }
         @keyframes rec-new-row {
           0%, 78%  { opacity: 0; transform: translateY(-4px); }

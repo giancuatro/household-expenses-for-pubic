@@ -46,7 +46,14 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MoneyInput } from "@/components/ui/MoneyInput";
 import { ColorPicker } from "@/components/ui/ColorPicker";
 import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
-import { KIND_DEFAULT_HEX, KIND_LABEL, KIND_ORDER, colorsFromHex } from "@/lib/categoryColors";
+import {
+  buildCategoryColorMap,
+  KIND_DEFAULT_HEX,
+  KIND_LABEL,
+  KIND_ORDER,
+  colorsFromHex,
+} from "@/lib/categoryColors";
+import { buildUserColorMap } from "@/lib/userColors";
 import type { ColorKindKey } from "@/lib/types";
 import type { HouseholdMembership } from "@/lib/auth";
 
@@ -73,6 +80,11 @@ export default function SettingsClient({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Effective color maps so list rows always show the *current* color users
+  // see in the rest of the app (custom hex if set, position-based fallback if
+  // not). Computed once per render.
+  const userColorMap = buildUserColorMap(users);
+  const categoryColorMap = buildCategoryColorMap(categories);
   const validTabs = [
     "household",
     "users",
@@ -81,7 +93,6 @@ export default function SettingsClient({
     "payments",
     "cash",
     "accounts",
-    "appearance",
     "data",
   ] as const;
   const initialTab = (() => {
@@ -116,15 +127,14 @@ export default function SettingsClient({
       {err && <p className="text-sm text-destructive">{err}</p>}
 
       <Tabs value={tab} onValueChange={changeTab} className="w-full">
-        <TabsList className="w-full grid grid-cols-3 sm:grid-cols-9 h-auto">
+        <TabsList className="w-full grid grid-cols-4 sm:grid-cols-8 h-auto">
           <TabsTrigger value="household">世帯</TabsTrigger>
           <TabsTrigger value="users">メンバー</TabsTrigger>
-          <TabsTrigger value="categories">カテゴリ</TabsTrigger>
+          <TabsTrigger value="categories">カテゴリ・色</TabsTrigger>
           <TabsTrigger value="fixed">固定費</TabsTrigger>
           <TabsTrigger value="payments">支払方法</TabsTrigger>
           <TabsTrigger value="cash">現金残高</TabsTrigger>
           <TabsTrigger value="accounts">証券口座</TabsTrigger>
-          <TabsTrigger value="appearance">外観</TabsTrigger>
           <TabsTrigger value="data">データ管理</TabsTrigger>
         </TabsList>
 
@@ -143,19 +153,36 @@ export default function SettingsClient({
             <h2 className="font-semibold mb-3">ユーザー</h2>
             <ul className="divide-y divide-border">
               {users.map((u) => (
-                <UserRowItem key={u.id} user={u} start={start} onError={setErr} pending={pending} />
+                <UserRowItem
+                  key={u.id}
+                  user={u}
+                  effectiveColor={userColorMap.get(u.id)?.chart ?? "#64748b"}
+                  start={start}
+                  onError={setErr}
+                  pending={pending}
+                />
               ))}
             </ul>
             <AddUserForm start={start} onError={setErr} pending={pending} />
           </section>
         </TabsContent>
 
-        <TabsContent value="categories">
+        <TabsContent value="categories" className="space-y-4">
           <section className="card">
-            <h2 className="font-semibold mb-3">カテゴリ & 予算</h2>
-            <CategoryList categories={categories} start={start} onError={setErr} pending={pending} />
+            <h2 className="font-semibold mb-1">変動費カテゴリ</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              月ごとの予算と色を設定できます。色は取引一覧やチャートに反映されます。
+            </p>
+            <CategoryList
+              categories={categories}
+              colorMap={categoryColorMap}
+              start={start}
+              onError={setErr}
+              pending={pending}
+            />
             <AddCategoryForm start={start} onError={setErr} pending={pending} />
           </section>
+          <KindColorSettings rows={kindColors} start={start} onError={setErr} pending={pending} />
         </TabsContent>
 
         <TabsContent value="fixed">
@@ -252,10 +279,6 @@ export default function SettingsClient({
             </ul>
             <AddAccountForm users={users} start={start} onError={setErr} pending={pending} />
           </section>
-        </TabsContent>
-
-        <TabsContent value="appearance">
-          <KindColorSettings rows={kindColors} start={start} onError={setErr} pending={pending} />
         </TabsContent>
 
         <TabsContent value="data">
@@ -447,9 +470,11 @@ function DataManagement({ role }: { role: "owner" | "editor" | "viewer" }) {
 
 /* -------------------- Users -------------------- */
 function UserRowItem({
-  user, start, onError, pending,
+  user, effectiveColor, start, onError, pending,
 }: {
   user: UserRow;
+  /** Effective hex color: user.color_hex if set, else position-based fallback. */
+  effectiveColor: string;
   start: (fn: () => void) => void;
   onError: (e: string | null) => void;
   pending: boolean;
@@ -487,13 +512,12 @@ function UserRowItem({
 
   return (
     <li className="py-2 flex items-center gap-2 min-w-0">
-      {user.color_hex && (
-        <span
-          aria-hidden="true"
-          className="h-3 w-3 rounded-full shrink-0 border border-border"
-          style={{ backgroundColor: user.color_hex }}
-        />
-      )}
+      <span
+        aria-hidden="true"
+        className="h-3 w-3 rounded-full shrink-0 border border-border"
+        style={{ backgroundColor: effectiveColor }}
+        title={user.color_hex ? "カスタム色" : "デフォルト色"}
+      />
       <div className="flex-1 truncate font-medium">{user.name}</div>
       <button className="btn-ghost text-xs py-1 px-2 shrink-0" onClick={() => setEditing(true)}>編集</button>
       <button
@@ -534,9 +558,10 @@ function AddUserForm({
 
 /* -------------------- Categories -------------------- */
 function CategoryList({
-  categories, start, onError, pending,
+  categories, colorMap, start, onError, pending,
 }: {
   categories: CategoryRow[];
+  colorMap: Map<string, { chart: string; bg: string; text: string }>;
   start: (fn: () => void) => void;
   onError: (e: string | null) => void;
   pending: boolean;
@@ -547,6 +572,7 @@ function CategoryList({
         <CategoryRowItem
           key={c.id}
           c={c}
+          effectiveColor={colorMap.get(c.id)?.chart ?? "#64748b"}
           canUp={idx > 0}
           canDown={idx < categories.length - 1}
           onMove={(dir) => {
@@ -569,9 +595,11 @@ function CategoryList({
 }
 
 function CategoryRowItem({
-  c, canUp, canDown, onMove, start, onError, pending,
+  c, effectiveColor, canUp, canDown, onMove, start, onError, pending,
 }: {
   c: CategoryRow;
+  /** Effective hex color: c.color_hex if set, else palette fallback. */
+  effectiveColor: string;
   canUp: boolean;
   canDown: boolean;
   onMove: (dir: -1 | 1) => void;
@@ -615,18 +643,16 @@ function CategoryRowItem({
     );
   }
 
-  const swatch = c.color_hex ?? null;
   return (
     <li className="py-2 flex flex-col sm:flex-row sm:items-center gap-2">
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <span className="chip bg-muted text-xs w-12 justify-center shrink-0">{c.type === "shared" ? "共同" : "個人"}</span>
-        {swatch && (
-          <span
-            aria-hidden="true"
-            className="h-3 w-3 rounded-full shrink-0 border border-border"
-            style={{ backgroundColor: swatch }}
-          />
-        )}
+        <span
+          aria-hidden="true"
+          className="h-3 w-3 rounded-full shrink-0 border border-border"
+          style={{ backgroundColor: effectiveColor }}
+          title={c.color_hex ? "カスタム色" : "デフォルト色"}
+        />
         <div className="font-medium truncate min-w-0 flex-1">{c.name}</div>
         <div className="text-sm text-muted-foreground tabular-nums shrink-0">{yen(c.budget_amount)}</div>
       </div>
