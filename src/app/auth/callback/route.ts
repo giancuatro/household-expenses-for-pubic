@@ -1,24 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { getSupabaseServer, getSupabaseAdmin } from "@/lib/supabase/server";
+import { acceptInvite } from "@/lib/invite";
 
 /**
  * Magic-link / OAuth callback handler.
  *
- * Supabase magic links can land here with one of two query patterns,
- * depending on the auth flow Supabase chose:
+ * Supabase magic links can land here with one of three query patterns:
+ *  1. PKCE flow         → `?code=<jwt>`
+ *  2. Token-hash flow    → `?token_hash=<hash>&type=<email|magiclink|invite|...>`
+ *  3. No exchange needed → user already has a session cookie (e.g. they just
+ *     finished `supabase.auth.signUp` on the client and we redirected here
+ *     to apply post-signup side-effects like household bootstrap or invite
+ *     acceptance). In this case we trust the existing session.
  *
- *  1. PKCE flow      → `?code=<jwt>`
- *  2. Token-hash flow → `?token_hash=<hash>&type=<email|magiclink|invite|...>`
- *
- * We accept both. After establishing a session, we:
+ * After establishing a session, we:
  *   - Bootstrap a new household if `?household_name=` is present (signup flow)
  *     and the user isn't a member of any household yet.
  *   - Accept an invitation if `?invite=<token>` is present.
  *   - Redirect to `?next=` (default "/").
  *
- * If neither `code` nor `token_hash` is present, we redirect to /login with
- * an error so the user sees what went wrong instead of a blank screen.
+ * If we can't find any session at all, we redirect to /login with an error
+ * so the user sees what went wrong instead of a blank screen.
  */
 /**
  * Limit `?next=` to a relative path on this origin so a crafted
@@ -47,11 +50,20 @@ export async function GET(req: NextRequest) {
 
   const sb = getSupabaseServer();
 
-  // ---- 1. Establish session (PKCE OR token-hash) -------------------------
+  // ---- 1. Establish session ----------------------------------------------
+  // Three sources, in priority order:
+  //   (a) An existing cookie session — most relevant when the InviteSignup
+  //       form just called supabase.auth.signUp on the client and bounced
+  //       us here to apply side-effects.
+  //   (b) PKCE code exchange (Magic Link / OAuth).
+  //   (c) Token-hash + type (legacy magic-link flow).
   let user: { id: string; email: string | null } | null = null;
   let exchangeError: string | null = null;
 
-  if (code) {
+  const { data: existingSession } = await sb.auth.getUser();
+  if (existingSession?.user) {
+    user = { id: existingSession.user.id, email: existingSession.user.email ?? null };
+  } else if (code) {
     const { data, error } = await sb.auth.exchangeCodeForSession(code);
     if (error || !data?.user) {
       exchangeError = error?.message ?? "exchange_failed";
@@ -66,69 +78,28 @@ export async function GET(req: NextRequest) {
       user = { id: data.user.id, email: data.user.email ?? null };
     }
   } else {
-    exchangeError = "missing_code_or_token_hash";
+    exchangeError = "missing_session";
   }
 
   if (!user) {
     const errParam = encodeURIComponent(exchangeError ?? "auth_failed");
-    return NextResponse.redirect(new URL(`/login?error=${errParam}`, req.url));
+    // Preserve invite context so the login page can route the user back
+    // through the invite landing after they sign in.
+    const params = new URLSearchParams({ error: errParam });
+    if (inviteToken) params.set("next", `/invite/${inviteToken}`);
+    return NextResponse.redirect(new URL(`/login?${params.toString()}`, req.url));
   }
 
   // ---- 2. Side-effects under admin (bypass RLS for bootstrap) -----------
   const admin = getSupabaseAdmin();
 
-  // Accept invitation if token provided
   if (inviteToken) {
-    const { data: invite } = await admin
-      .from("household_invitations")
-      .select("id, household_id, role, email, expires_at, accepted_at")
-      .eq("token", inviteToken)
-      .maybeSingle();
-    const inviteEmail = ((invite?.email as string | null) ?? "").trim().toLowerCase();
-    const emailOk =
-      // Open invite (no specific email recorded) → anyone with the link can join.
-      inviteEmail === "" ||
-      // Targeted invite → require the signed-in email to match.
-      !user.email ||
-      inviteEmail === user.email.toLowerCase();
-    if (
-      invite &&
-      !invite.accepted_at &&
-      new Date(invite.expires_at as string) > new Date() &&
-      emailOk
-    ) {
-      await admin.from("household_members").upsert(
-        {
-          household_id: invite.household_id,
-          auth_user_id: user.id,
-          role: invite.role,
-          display_name: displayName ?? null,
-        },
-        { onConflict: "household_id,auth_user_id" },
-      );
-      await admin
-        .from("household_invitations")
-        .update({ accepted_at: new Date().toISOString() })
-        .eq("id", invite.id);
-      // Ensure the new member also has a `users` row (payer label) so they
-      // can appear in the transaction-form payer dropdown immediately.
-      const { data: existingPayer } = await admin
-        .from("users")
-        .select("id")
-        .eq("household_id", invite.household_id)
-        .eq("auth_user_id", user.id)
-        .limit(1);
-      if ((existingPayer ?? []).length === 0) {
-        const fallbackName = displayName
-          || (user.email ? user.email.split("@")[0] : null)
-          || "メンバー";
-        await admin.from("users").insert({
-          household_id: invite.household_id,
-          name: fallbackName,
-          auth_user_id: user.id,
-        });
-      }
-    }
+    await acceptInvite({
+      token: inviteToken,
+      userId: user.id,
+      userEmail: user.email,
+      displayName,
+    });
   }
 
   // Bootstrap a new household if the signup form provided a name AND the

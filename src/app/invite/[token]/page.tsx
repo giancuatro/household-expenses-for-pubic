@@ -1,17 +1,22 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSupabaseAdmin, getSupabaseServer } from "@/lib/supabase/server";
+import { acceptInvite } from "@/lib/invite";
 import InviteSignupForm from "./InviteSignupForm";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Public landing page for an invitation link. Validates the token, then
- * either:
- *  - already-authed user: forwards to /auth/callback to upsert membership;
- *  - anonymous user: shows a name/email/password signup form which posts to
- *    Supabase signUp() and then forwards through /auth/callback with the
- *    invite token preserved.
+ * Public landing page for an invitation link. Validates the token, then:
+ *
+ *   - if the visitor is already signed in → accept the invite directly
+ *     server-side (RLS-bypassing admin client) and redirect to "/";
+ *   - if anonymous → render the in-page name/email/password signup form.
+ *     After signUp succeeds, the form bounces through /auth/callback which
+ *     reads the freshly-set session cookie and finishes the acceptance.
+ *
+ * The route is in middleware.ts PUBLIC_PATHS, so anonymous visitors land
+ * here directly instead of being kicked to /login.
  */
 export default async function InvitePage({
   params,
@@ -49,12 +54,20 @@ export default async function InvitePage({
     );
   }
 
-  // If already signed in, forward straight to the callback so it upserts
-  // membership and redirects home.
+  // If already signed in, accept the invite directly and send them home.
+  // (Going through /auth/callback would also work, but doing it here avoids
+  // a redirect hop and works without depending on the callback recognising
+  // the existing-session case.)
   const sb = getSupabaseServer();
   const { data: userData } = await sb.auth.getUser();
   if (userData?.user) {
-    redirect(`/auth/callback?invite=${encodeURIComponent(token)}&next=/`);
+    await acceptInvite({
+      token,
+      userId: userData.user.id,
+      userEmail: userData.user.email ?? null,
+      displayName: null,
+    });
+    redirect("/");
   }
 
   const householdName =
