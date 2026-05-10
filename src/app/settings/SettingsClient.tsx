@@ -393,6 +393,16 @@ function DataManagement({ role }: { role: "owner" | "editor" | "viewer" }) {
   return (
     <div className="space-y-4">
       <section className="card space-y-3">
+        <h2 className="font-semibold">クレカ明細の突合</h2>
+        <p className="text-sm text-muted-foreground">
+          月次のカード明細 CSV をアップロードして、家計簿との差分を確認・補正できます。AMEX 形式と汎用パーサに対応。
+        </p>
+        <a href="/reconcile" className="btn-secondary text-sm inline-block w-full sm:w-auto text-center">
+          明細インポートを開く
+        </a>
+      </section>
+
+      <section className="card space-y-3">
         <h2 className="font-semibold">データのエクスポート</h2>
         <p className="text-sm text-muted-foreground">
           あなたが所属する世帯の全データを ZIP（JSON + CSV）でダウンロードできます。バックアップや、本サービスを離れる際のデータ持ち出しに利用してください。
