@@ -3,22 +3,25 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, Copy, Wallet, CalendarClock, TrendingUp, Users, User } from "lucide-react";
+import { Check, Copy, Users, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { completeOnboarding } from "@/app/actions/auth";
 import { createOpenInvite } from "@/app/actions/settings";
+import { CashFlowIllustration } from "./illustrations/CashFlowIllustration";
+import { CreditCardIllustration } from "./illustrations/CreditCardIllustration";
+import { InvestmentLinkIllustration } from "./illustrations/InvestmentLinkIllustration";
 
 type Mode = "household" | "individual" | null;
 
 type Slide = {
-  icon: React.ComponentType<{ className?: string }>;
+  illustration: React.ComponentType;
   title: string;
   body: React.ReactNode;
 };
 
 const SLIDES: Slide[] = [
   {
-    icon: Wallet,
+    illustration: CashFlowIllustration,
     title: "現金スナップショットで残高を追跡",
     body: (
       <>
@@ -27,7 +30,7 @@ const SLIDES: Slide[] = [
     ),
   },
   {
-    icon: CalendarClock,
+    illustration: CreditCardIllustration,
     title: "クレカの締め日と支払日でキャッシュフロー予測",
     body: (
       <>
@@ -36,7 +39,7 @@ const SLIDES: Slide[] = [
     ),
   },
   {
-    icon: TrendingUp,
+    illustration: InvestmentLinkIllustration,
     title: "投資の売買が自動で現金残高に反映",
     body: (
       <>
@@ -143,11 +146,11 @@ export function OnboardingTour() {
 }
 
 function FeatureSlide({ slide }: { slide: Slide }) {
-  const Icon = slide.icon;
+  const Illustration = slide.illustration;
   return (
     <div className="space-y-3">
-      <div className="inline-flex items-center justify-center rounded-2xl bg-primary/10 text-primary w-12 h-12">
-        <Icon className="h-6 w-6" aria-hidden="true" />
+      <div className="rounded-xl border border-border bg-muted/20 overflow-hidden">
+        <Illustration />
       </div>
       <h2 className="text-xl font-bold tracking-tight">{slide.title}</h2>
       <p className="text-sm leading-relaxed text-muted-foreground">{slide.body}</p>
