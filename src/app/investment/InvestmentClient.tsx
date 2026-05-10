@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import clsx from "clsx";
 import type {
   InvestmentAccountRow,
@@ -391,10 +392,12 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
           );
         })}
         {accounts.length === 0 && (
-          <>
-            <p className="py-2 text-muted-foreground text-sm">口座が未登録です。</p>
-            <p className="mt-2 text-xs text-muted-foreground">証券口座は「設定」タブから追加できます。</p>
-          </>
+          <div className="py-2 space-y-2">
+            <p className="text-muted-foreground text-sm">証券口座が未登録です。追加すると保有銘柄や売買履歴を記録できます。</p>
+            <Link href="/settings?tab=accounts" className="btn-primary text-sm inline-block">
+              証券口座を追加する
+            </Link>
+          </div>
         )}
       </section>
 

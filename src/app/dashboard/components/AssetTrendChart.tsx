@@ -104,12 +104,43 @@ export default function AssetTrendChart({
       return;
     }
     setLoading(true);
-    buildAssetHistory({
-      holdings,
-      trades,
-      granularity: effectiveGranularity,
-      fromDate: startDateForPeriod(period),
-    })
+    // Fetch the live price for every ticker we may need, then pass it into
+    // buildAssetHistory so the chart's right-most data point uses live prices
+    // (matches the headline total on the investment tab). If a price fetch
+    // fails the entry is just omitted — buildAssetHistory falls back to
+    // history/snapshot in that case.
+    const allTickers = Array.from(new Set([
+      ...holdings.map((h) => h.ticker),
+      ...trades.map((t) => t.ticker),
+    ]));
+    const fetchAll = Promise.all(
+      allTickers.map(async (ticker) => {
+        try {
+          const res = await fetch(`/api/stock-price?ticker=${encodeURIComponent(ticker)}`);
+          if (!res.ok) return [ticker, null] as const;
+          const json: { price?: number; error?: string } = await res.json();
+          if (json.error || typeof json.price !== "number") return [ticker, null] as const;
+          return [ticker, json.price] as const;
+        } catch {
+          return [ticker, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      const m = new Map<string, number>();
+      for (const [t, p] of entries) if (p !== null) m.set(t, p);
+      return m;
+    });
+
+    fetchAll
+      .then((livePrices) =>
+        buildAssetHistory({
+          holdings,
+          trades,
+          granularity: effectiveGranularity,
+          fromDate: startDateForPeriod(period),
+          livePrices,
+        }),
+      )
       .then(({ rows, tickers }) => {
         if (cancelled) return;
         setRows(rows);

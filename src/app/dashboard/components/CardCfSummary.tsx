@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import type { PaymentMethodRow, TransactionRow, UserRow } from "@/lib/types";
 import { yen, todayIso } from "@/lib/format";
 import { computeBilling, formatDayOfMonth } from "@/lib/paymentSchedule";
@@ -25,7 +26,7 @@ export default function CardCfSummary({
   paymentMethods: PaymentMethodRow[];
 }) {
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
-  const userColors = useMemo(() => buildUserColorMap(users.map((u) => u.id)), [users]);
+  const userColors = useMemo(() => buildUserColorMap(users), [users]);
   const cards = useMemo(
     () => paymentMethods.filter((m) => m.type === "credit_card" && !m.archived),
     [paymentMethods]
@@ -49,7 +50,19 @@ export default function CardCfSummary({
     });
   }, [cards, transactions, today]);
 
-  if (cards.length === 0) return null;
+  if (cards.length === 0) {
+    return (
+      <section className="card">
+        <h2 className="font-semibold mb-1">クレジットカード CF</h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          クレジットカードを登録して締め日・支払日を入れると、各カードの引落予定とキャッシュフロー予測が表示されます。
+        </p>
+        <Link href="/settings?tab=payments" className="btn-primary text-sm inline-block">
+          支払方法を設定する
+        </Link>
+      </section>
+    );
+  }
 
   return (
     <section className="card">
@@ -67,7 +80,14 @@ export default function CardCfSummary({
               <div>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-semibold truncate">{card.name}</span>
-                  <span className={`chip border text-[10px] py-0 px-2 shrink-0 ${colors.bg} ${colors.text} ${colors.border}`}>
+                  <span
+                    className="chip border text-[10px] py-0 px-2 shrink-0"
+                    style={{
+                      backgroundColor: colors.bg,
+                      color: colors.text,
+                      borderColor: colors.border,
+                    }}
+                  >
                     {ownerName}
                   </span>
                 </div>

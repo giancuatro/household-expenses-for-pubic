@@ -15,6 +15,8 @@ export interface UserRow {
   id: string;
   name: string;
   created_at: string;
+  /** Optional user-chosen accent color (hex). Null falls back to palette. */
+  color_hex: string | null;
 }
 
 export interface CategoryRow {
@@ -24,6 +26,28 @@ export interface CategoryRow {
   budget_amount: number;
   is_active: boolean;
   sort_order: number;
+  /** Optional user-chosen color (hex). Null falls back to palette. */
+  color_hex: string | null;
+}
+
+/**
+ * Color customization key for transaction "kinds" plus the synthetic "advance"
+ * bucket (which is a boolean flag on transactions, not a TxnKind value).
+ */
+export type ColorKindKey =
+  | "income"
+  | "fixed"
+  | "loan"
+  | "special"
+  | "investment"
+  | "transfer_in"
+  | "transfer_out"
+  | "advance";
+
+/** Per-household color override for kinds that aren't category rows. */
+export interface KindColorRow {
+  kind: ColorKindKey;
+  color_hex: string;
 }
 
 export interface FixedCostMasterRow {

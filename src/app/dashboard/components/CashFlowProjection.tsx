@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import {
   Area,
   AreaChart,
@@ -64,9 +65,12 @@ export default function CashFlowProjection({
     return (
       <section className="card">
         <h2 className="font-semibold mb-1">キャッシュフロー予測（60日）</h2>
-        <p className="text-sm text-muted-foreground">
-          現在の現金残高を 設定 &gt; 現金残高 から登録すると、ここに今後60日分の推移と、引き落としタイミング毎の残高変化が表示されます。
+        <p className="text-sm text-muted-foreground mb-3">
+          現在の現金残高を登録すると、今後60日分の推移と引き落としタイミング毎の残高変化が表示されます。
         </p>
+        <Link href="/settings?tab=cash" className="btn-primary text-sm inline-block">
+          現金残高を登録する
+        </Link>
       </section>
     );
   }

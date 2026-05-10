@@ -13,9 +13,11 @@ import type {
   UserRow,
   TxnKind,
   PaymentMethodRow,
+  KindColorRow,
+  ColorKindKey,
 } from "@/lib/types";
 import { yen, formatJaDate, todayIso, formatJaMonth, addMonths, monthKey } from "@/lib/format";
-import { buildCategoryColorMap } from "@/lib/categoryColors";
+import { buildCategoryColorMap, buildKindColorMap, type CategoryColors } from "@/lib/categoryColors";
 import { buildUserColorMap, userColor, type UserColor } from "@/lib/userColors";
 import { computeBreakdown } from "@/lib/balance";
 import { buildCashFlowProjection } from "@/lib/cashFlow";
@@ -40,6 +42,9 @@ import {
   SheetClose,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { MoneyInput } from "@/components/ui/MoneyInput";
+import { InfoTip } from "@/components/ui/InfoTip";
+import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
 
 type Props = {
   users: UserRow[];
@@ -50,6 +55,9 @@ type Props = {
   fixedCostMasters: FixedCostMasterRow[];
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
+  kindColors: KindColorRow[];
+  /** True when this household has not yet completed onboarding. */
+  showOnboarding: boolean;
   currentMonth: string;
 };
 
@@ -70,6 +78,35 @@ function nextDayOfMonth(from: string, day: number): string {
   return `${calY}-${String(calM).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
 }
 
+/**
+ * Resolve which CategoryColors to use for a transaction row.
+ * Priority: advance flag > category_id > kind fallback.
+ */
+function resolveTxnColors(
+  t: TransactionRow,
+  catColorMap: Map<string, CategoryColors>,
+  kindColorMap: Map<ColorKindKey, CategoryColors>,
+): CategoryColors | undefined {
+  if (t.is_advance_payment) return kindColorMap.get("advance");
+  if (t.category_id) {
+    const c = catColorMap.get(t.category_id);
+    if (c) return c;
+  }
+  const kind = t.category_type;
+  if (
+    kind === "income" ||
+    kind === "fixed" ||
+    kind === "loan" ||
+    kind === "special" ||
+    kind === "investment" ||
+    kind === "transfer_in" ||
+    kind === "transfer_out"
+  ) {
+    return kindColorMap.get(kind);
+  }
+  return undefined;
+}
+
 export default function HomeClient({
   users,
   categories,
@@ -79,6 +116,8 @@ export default function HomeClient({
   fixedCostMasters,
   paymentMethods,
   cashSnapshots,
+  kindColors,
+  showOnboarding,
   currentMonth,
 }: Props) {
   const router = useRouter();
@@ -221,8 +260,9 @@ export default function HomeClient({
   const userMap = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
   const catMap = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const colorMap = useMemo(() => buildCategoryColorMap(categories), [categories]);
+  const kindColorMap = useMemo(() => buildKindColorMap(kindColors), [kindColors]);
   const pmMap = useMemo(() => new Map(paymentMethods.map((m) => [m.id, m])), [paymentMethods]);
-  const userColorMap = useMemo(() => buildUserColorMap(users.map((u) => u.id)), [users]);
+  const userColorMap = useMemo(() => buildUserColorMap(users), [users]);
   // Longest visible-character count across all user names (full-width counts as 1)
   const userMaxNameLen = useMemo(
     () => Math.max(1, ...users.map((u) => [...u.name].length)),
@@ -432,6 +472,7 @@ export default function HomeClient({
   /* ============================== UI ============================== */
   return (
     <div className="space-y-6">
+      {showOnboarding && <OnboardingTour />}
       {/* ============ Floating action button ============ */}
       <button
         type="button"
@@ -495,15 +536,12 @@ export default function HomeClient({
 
           <div>
             <div className="text-xs text-muted-foreground mb-2">② 金額</div>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9,]*"
+            <MoneyInput
               enterKeyHint="done"
               className="input text-2xl text-right font-semibold"
               placeholder="0"
               value={amount}
-              onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ""))}
+              onChange={setAmount}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -621,10 +659,10 @@ export default function HomeClient({
                   disabled={splitMode}
                 />
                 <span className="text-sm">立替（全額が他人の分）</span>
+                <InfoTip ariaLabel="立替について">
+                  金額の全額が他人の分。家計簿の支出には計上されず、後で精算済みにマークできます。
+                </InfoTip>
               </label>
-              <p className="text-xs text-muted-foreground mt-1">
-                立替：金額の全額が他人の分。家計簿の支出には計上されず、後で精算済みにマークできます。
-              </p>
             </div>
 
             {!editingTxn && (
@@ -640,22 +678,19 @@ export default function HomeClient({
                     }}
                   />
                   <span className="text-sm">グループ精算あり（家計分＋立替分を一括入力）</span>
+                  <InfoTip ariaLabel="グループ精算について">
+                    旅行などで代表払いした場合に使用。総額は上の「② 金額」、家計分を下に入力。差額が立替として自動的に別行で作成されます。
+                  </InfoTip>
                 </label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  旅行などで代表払いした場合に使用。総額は上の「② 金額」、家計分を下に入力。差額が立替として自動的に別行で作成されます。
-                </p>
                 {splitMode && (
                   <div className="mt-2 space-y-1">
                     <div className="text-xs text-muted-foreground">うち家計分</div>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9,]*"
+                    <MoneyInput
                       enterKeyHint="done"
                       className="input text-right tabular-nums"
                       placeholder="例: 20000"
                       value={splitOurAmount}
-                      onChange={(e) => setSplitOurAmount(e.target.value.replace(/[^\d]/g, ""))}
+                      onChange={setSplitOurAmount}
                     />
                     {(() => {
                       const total = parseInt(amount.replace(/,/g, ""), 10);
@@ -810,10 +845,18 @@ export default function HomeClient({
             };
             const colors = userColor(userColorMap, u.id);
             return (
-              <div key={u.id} className={clsx("rounded-xl border-l-4 border border-border p-3", colors.border)}>
+              <div
+                key={u.id}
+                className="rounded-xl border-l-4 border border-border p-3"
+                style={{ borderLeftColor: colors.chart }}
+              >
                 <div className="flex items-center gap-1.5">
-                  <span className={clsx("h-2 w-2 rounded-full", colors.dot)} aria-hidden="true" />
-                  <div className={clsx("text-sm font-medium", colors.text)}>{u.name}</div>
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: colors.chart }}
+                    aria-hidden="true"
+                  />
+                  <div className="text-sm font-medium" style={{ color: colors.text }}>{u.name}</div>
                 </div>
                 <div className="mt-1 text-xs tabular-nums">収入 {yen(b.income)}</div>
                 <div className="text-xs tabular-nums">支出 {yen(b.expense)}</div>
@@ -1240,22 +1283,25 @@ export default function HomeClient({
               if (sortKey === "amount_asc") return a.amount - b.amount;
               return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
             })
-            .map((t) => (
-            <TxnRow
-              key={t.id}
-              t={t}
-              userName={userMap.get(t.user_id)?.name ?? "?"}
-              userColors={userColor(userColorMap, t.user_id)}
-              userMaxNameLen={userMaxNameLen}
-              categoryName={t.category_id ? catMap.get(t.category_id)?.name ?? null : null}
-              categoryColors={t.category_id ? colorMap.get(t.category_id) : undefined}
-              paymentMethod={t.payment_method_id ? pmMap.get(t.payment_method_id) ?? null : null}
-              selectionMode={selectionMode}
-              selected={selectedIds.has(t.id)}
-              onToggleSelect={() => toggleSelected(t.id)}
-              onEdit={() => setEditingTxn(t)}
-            />
-          ))}
+            .map((t) => {
+              const colors = resolveTxnColors(t, colorMap, kindColorMap);
+              return (
+                <TxnRow
+                  key={t.id}
+                  t={t}
+                  userName={userMap.get(t.user_id)?.name ?? "?"}
+                  userColors={userColor(userColorMap, t.user_id)}
+                  userMaxNameLen={userMaxNameLen}
+                  categoryName={t.category_id ? catMap.get(t.category_id)?.name ?? null : null}
+                  categoryColors={colors}
+                  paymentMethod={t.payment_method_id ? pmMap.get(t.payment_method_id) ?? null : null}
+                  selectionMode={selectionMode}
+                  selected={selectedIds.has(t.id)}
+                  onToggleSelect={() => toggleSelected(t.id)}
+                  onEdit={() => setEditingTxn(t)}
+                />
+              );
+            })}
           {viewTransactions.filter((t) => {
             if (t.category_type === "variable") {
               return t.category_id
@@ -1389,13 +1435,13 @@ function TxnRow({
           {shortDate}
         </div>
         <div
-          className={clsx(
-            "text-xs rounded-full px-2 py-0.5 shrink-0 text-center font-medium border whitespace-nowrap",
-            userColors.bg,
-            userColors.text,
-            userColors.border,
-          )}
-          style={{ minWidth: userChipMinWidth }}
+          className="text-xs rounded-full px-2 py-0.5 shrink-0 text-center font-medium border whitespace-nowrap"
+          style={{
+            minWidth: userChipMinWidth,
+            backgroundColor: userColors.bg,
+            color: userColors.text,
+            borderColor: userColors.border,
+          }}
         >
           {userName}
         </div>

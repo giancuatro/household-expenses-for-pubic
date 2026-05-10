@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CategoryRow,
   FixedCostMasterRow,
@@ -9,6 +9,7 @@ import type {
   InvestmentAccountRow,
   PaymentMethodRow,
   CashBalanceSnapshotRow,
+  KindColorRow,
 } from "@/lib/types";
 import { yen, monthKey, todayIso } from "@/lib/format";
 import { formatDayOfMonth } from "@/lib/paymentSchedule";
@@ -16,7 +17,9 @@ import {
   createUser,
   deleteUser,
   renameUser,
+  updateUserColor,
   upsertCategory,
+  upsertKindColor,
   deleteCategory,
   reorderCategories,
   upsertFixedCost,
@@ -40,6 +43,10 @@ import {
 } from "../actions/settings";
 import { createAccount, deleteAccount } from "../actions/investment";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { MoneyInput } from "@/components/ui/MoneyInput";
+import { ColorPicker } from "@/components/ui/ColorPicker";
+import { KIND_DEFAULT_HEX, KIND_LABEL, KIND_ORDER, colorsFromHex } from "@/lib/categoryColors";
+import type { ColorKindKey } from "@/lib/types";
 import type { HouseholdMembership } from "@/lib/auth";
 
 export default function SettingsClient({
@@ -49,6 +56,7 @@ export default function SettingsClient({
   investmentAccounts,
   paymentMethods,
   cashSnapshots,
+  kindColors,
   household,
   memberships,
 }: {
@@ -58,12 +66,39 @@ export default function SettingsClient({
   investmentAccounts: InvestmentAccountRow[];
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
+  kindColors: KindColorRow[];
   household: HouseholdMembership;
   memberships: HouseholdMembership[];
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const validTabs = [
+    "household",
+    "users",
+    "categories",
+    "fixed",
+    "payments",
+    "cash",
+    "accounts",
+    "appearance",
+    "data",
+  ] as const;
+  const initialTab = (() => {
+    const t = searchParams?.get("tab") ?? "";
+    return (validTabs as readonly string[]).includes(t) ? t : "household";
+  })();
+  const [tab, setTab] = useState(initialTab);
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
+
+  function changeTab(next: string) {
+    setTab(next);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", next);
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
 
   async function logout() {
     await fetch("/api/logout", { method: "POST" });
@@ -79,8 +114,8 @@ export default function SettingsClient({
 
       {err && <p className="text-sm text-destructive">{err}</p>}
 
-      <Tabs defaultValue="household" className="w-full">
-        <TabsList className="w-full grid grid-cols-4 sm:grid-cols-8 h-auto">
+      <Tabs value={tab} onValueChange={changeTab} className="w-full">
+        <TabsList className="w-full grid grid-cols-3 sm:grid-cols-9 h-auto">
           <TabsTrigger value="household">世帯</TabsTrigger>
           <TabsTrigger value="users">メンバー</TabsTrigger>
           <TabsTrigger value="categories">カテゴリ</TabsTrigger>
@@ -88,6 +123,7 @@ export default function SettingsClient({
           <TabsTrigger value="payments">支払方法</TabsTrigger>
           <TabsTrigger value="cash">現金残高</TabsTrigger>
           <TabsTrigger value="accounts">証券口座</TabsTrigger>
+          <TabsTrigger value="appearance">外観</TabsTrigger>
           <TabsTrigger value="data">データ管理</TabsTrigger>
         </TabsList>
 
@@ -217,11 +253,87 @@ export default function SettingsClient({
           </section>
         </TabsContent>
 
+        <TabsContent value="appearance">
+          <KindColorSettings rows={kindColors} start={start} onError={setErr} pending={pending} />
+        </TabsContent>
+
         <TabsContent value="data">
           <DataManagement role={household.role} />
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+/* -------------------- Kind colors (income / fixed / special / etc.) -------------------- */
+function KindColorSettings({
+  rows, start, onError, pending,
+}: {
+  rows: KindColorRow[];
+  start: (fn: () => void) => void;
+  onError: (e: string | null) => void;
+  pending: boolean;
+}) {
+  const [draft, setDraft] = useState<Record<ColorKindKey, string>>(() => {
+    const out = {} as Record<ColorKindKey, string>;
+    for (const k of KIND_ORDER) {
+      const found = rows.find((r) => r.kind === k);
+      out[k] = found?.color_hex ?? KIND_DEFAULT_HEX[k];
+    }
+    return out;
+  });
+
+  return (
+    <section className="card">
+      <h2 className="font-semibold mb-1">種類別カラー</h2>
+      <p className="text-xs text-muted-foreground mb-3">
+        カテゴリ以外の取引種類（収入・固定費・特別費・立替など）の色を設定します。設定した色は取引一覧やチャートで使われます。
+      </p>
+      <ul className="divide-y divide-border">
+        {KIND_ORDER.map((kind) => {
+          const current = draft[kind];
+          const colors = colorsFromHex(current);
+          return (
+            <li key={kind} className="py-3 space-y-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  aria-hidden="true"
+                  className="h-4 w-4 rounded-full shrink-0 border border-border"
+                  style={{ backgroundColor: colors.chart }}
+                />
+                <div className="flex-1 font-medium truncate">{KIND_LABEL[kind]}</div>
+                <span
+                  className="chip border text-[11px] py-0 px-2 shrink-0"
+                  style={{
+                    backgroundColor: colors.bg,
+                    color: colors.text,
+                    borderColor: colors.chart,
+                  }}
+                >
+                  プレビュー
+                </span>
+              </div>
+              <ColorPicker
+                ariaLabel={`${KIND_LABEL[kind]}の色`}
+                value={current}
+                onChange={(hex) => {
+                  const next = hex ?? KIND_DEFAULT_HEX[kind];
+                  setDraft((prev) => ({ ...prev, [kind]: next }));
+                  start(async () => {
+                    onError(null);
+                    try {
+                      await upsertKindColor({ kind, color_hex: next });
+                    } catch (e: any) {
+                      onError(e.message);
+                    }
+                  });
+                }}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -343,38 +455,57 @@ function UserRowItem({
 }) {
   const [name, setName] = useState(user.name);
   const [editing, setEditing] = useState(false);
-  return (
-    <li className="py-2 flex items-center gap-2 min-w-0">
-      {editing ? (
-        <>
+  const [colorHex, setColorHex] = useState<string | null>(user.color_hex);
+
+  if (editing) {
+    return (
+      <li className="py-2 space-y-2">
+        <div className="flex items-center gap-2 min-w-0">
           <input className="input flex-1 min-w-0" value={name} onChange={(e) => setName(e.target.value)} />
           <button
             className="btn-primary text-xs py-1 px-3 shrink-0"
             disabled={pending}
             onClick={() => start(async () => {
               onError(null);
-              try { await renameUser(user.id, name); setEditing(false); } catch (e: any) { onError(e.message); }
+              try {
+                if (name !== user.name) await renameUser(user.id, name);
+                if (colorHex !== user.color_hex) await updateUserColor(user.id, colorHex);
+                setEditing(false);
+              } catch (e: any) { onError(e.message); }
             })}
           >保存</button>
-          <button className="btn-ghost text-xs py-1 px-3 shrink-0" onClick={() => { setName(user.name); setEditing(false); }}>キャンセル</button>
-        </>
-      ) : (
-        <>
-          <div className="flex-1 truncate font-medium">{user.name}</div>
-          <button className="btn-ghost text-xs py-1 px-2 shrink-0" onClick={() => setEditing(true)}>名前変更</button>
           <button
-            className="btn-danger text-xs py-1 px-2 shrink-0"
-            disabled={pending}
-            onClick={() => {
-              if (!confirm(`${user.name} を削除しますか？`)) return;
-              start(async () => {
-                onError(null);
-                try { await deleteUser(user.id); } catch (e: any) { onError(e.message); }
-              });
-            }}
-          >削除</button>
-        </>
+            className="btn-ghost text-xs py-1 px-3 shrink-0"
+            onClick={() => { setName(user.name); setColorHex(user.color_hex); setEditing(false); }}
+          >キャンセル</button>
+        </div>
+        <ColorPicker label="色" value={colorHex} onChange={setColorHex} />
+      </li>
+    );
+  }
+
+  return (
+    <li className="py-2 flex items-center gap-2 min-w-0">
+      {user.color_hex && (
+        <span
+          aria-hidden="true"
+          className="h-3 w-3 rounded-full shrink-0 border border-border"
+          style={{ backgroundColor: user.color_hex }}
+        />
       )}
+      <div className="flex-1 truncate font-medium">{user.name}</div>
+      <button className="btn-ghost text-xs py-1 px-2 shrink-0" onClick={() => setEditing(true)}>編集</button>
+      <button
+        className="btn-danger text-xs py-1 px-2 shrink-0"
+        disabled={pending}
+        onClick={() => {
+          if (!confirm(`${user.name} を削除しますか？`)) return;
+          start(async () => {
+            onError(null);
+            try { await deleteUser(user.id); } catch (e: any) { onError(e.message); }
+          });
+        }}
+      >削除</button>
     </li>
   );
 }
@@ -450,38 +581,51 @@ function CategoryRowItem({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(c.name);
   const [budget, setBudget] = useState(String(c.budget_amount));
+  const [colorHex, setColorHex] = useState<string | null>(c.color_hex);
 
   if (editing) {
     return (
-      <li className="py-2 flex flex-col sm:flex-row sm:items-center gap-2">
-        <input className="input flex-1 min-w-0" value={name} onChange={(e) => setName(e.target.value)} placeholder="カテゴリ名" />
-        <input className="input sm:w-32" type="number" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="予算" />
-        <div className="flex gap-2 justify-end shrink-0">
-          <button
-            className="btn-primary text-xs py-1 px-3"
-            disabled={pending}
-            onClick={() => start(async () => {
-              onError(null);
-              try {
-                await upsertCategory({
-                  id: c.id, name, type: c.type,
-                  budget_amount: parseInt(budget, 10) || 0,
-                  sort_order: c.sort_order, is_active: c.is_active,
-                });
-                setEditing(false);
-              } catch (e: any) { onError(e.message); }
-            })}
-          >保存</button>
-          <button className="btn-ghost text-xs py-1 px-3" onClick={() => setEditing(false)}>キャンセル</button>
+      <li className="py-2 space-y-2">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <input className="input flex-1 min-w-0" value={name} onChange={(e) => setName(e.target.value)} placeholder="カテゴリ名" />
+          <MoneyInput className="input sm:w-32" value={budget} onChange={setBudget} placeholder="予算" />
+          <div className="flex gap-2 justify-end shrink-0">
+            <button
+              className="btn-primary text-xs py-1 px-3"
+              disabled={pending}
+              onClick={() => start(async () => {
+                onError(null);
+                try {
+                  await upsertCategory({
+                    id: c.id, name, type: c.type,
+                    budget_amount: parseInt(budget, 10) || 0,
+                    sort_order: c.sort_order, is_active: c.is_active,
+                    color_hex: colorHex,
+                  });
+                  setEditing(false);
+                } catch (e: any) { onError(e.message); }
+              })}
+            >保存</button>
+            <button className="btn-ghost text-xs py-1 px-3" onClick={() => setEditing(false)}>キャンセル</button>
+          </div>
         </div>
+        <ColorPicker label="色" value={colorHex} onChange={setColorHex} />
       </li>
     );
   }
 
+  const swatch = c.color_hex ?? null;
   return (
     <li className="py-2 flex flex-col sm:flex-row sm:items-center gap-2">
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <span className="chip bg-muted text-xs w-12 justify-center shrink-0">{c.type === "shared" ? "共同" : "個人"}</span>
+        {swatch && (
+          <span
+            aria-hidden="true"
+            className="h-3 w-3 rounded-full shrink-0 border border-border"
+            style={{ backgroundColor: swatch }}
+          />
+        )}
         <div className="font-medium truncate min-w-0 flex-1">{c.name}</div>
         <div className="text-sm text-muted-foreground tabular-nums shrink-0">{yen(c.budget_amount)}</div>
       </div>
@@ -531,7 +675,7 @@ function AddCategoryForm({
         <option value="shared">共同</option>
         <option value="personal">個人</option>
       </select>
-      <input className="input" type="number" placeholder="月次予算" value={budget} onChange={(e) => setBudget(e.target.value)} />
+      <MoneyInput className="input" placeholder="月次予算" value={budget} onChange={setBudget} />
       <button className="btn-primary" disabled={pending}>追加</button>
     </form>
   );
@@ -632,7 +776,7 @@ function FixedCostItem({
           <option value="">共同</option>
           {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
         </select>
-        <input className="input" type="number" placeholder="金額" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <MoneyInput className="input" placeholder="金額" value={amount} onChange={setAmount} />
         <input className="input" type="month" value={validFromMonth} onChange={(e) => setValidFromMonth(e.target.value)} />
         <select className="input" value={paymentMethodId} onChange={(e) => setPaymentMethodId(e.target.value)}>
           <option value="">支払方法 未設定</option>
@@ -737,7 +881,7 @@ function AddFixedCostForm({
         <option value="">共同</option>
         {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
       </select>
-      <input className="input" type="number" placeholder="金額" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+      <MoneyInput className="input" placeholder="金額" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} />
       <input className="input" type="month" value={form.valid_from_month} onChange={(e) => setForm({ ...form, valid_from_month: e.target.value })} />
       <select
         className="input"
@@ -835,7 +979,7 @@ function AddCashBalanceForm({
       }}
     >
       <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-      <input className="input" type="number" placeholder="残高（円）" value={balance} onChange={(e) => setBalance(e.target.value)} />
+      <MoneyInput className="input" placeholder="残高（円）" value={balance} onChange={setBalance} />
       <input className="input" placeholder="メモ（任意）" value={note} onChange={(e) => setNote(e.target.value)} />
       <button className="btn-primary" disabled={pending}>残高を記録</button>
     </form>
@@ -1365,7 +1509,7 @@ function HouseholdSettings({
   useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [household.household_id]);
 
   function buildInviteUrl(token: string): string {
-    return `${window.location.origin}/auth/callback?invite=${token}&next=${encodeURIComponent("/")}`;
+    return `${window.location.origin}/invite/${token}`;
   }
 
   return (
