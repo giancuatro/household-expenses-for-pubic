@@ -45,6 +45,7 @@ import { createAccount, deleteAccount } from "../actions/investment";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MoneyInput } from "@/components/ui/MoneyInput";
 import { ColorPicker } from "@/components/ui/ColorPicker";
+import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
 import { KIND_DEFAULT_HEX, KIND_LABEL, KIND_ORDER, colorsFromHex } from "@/lib/categoryColors";
 import type { ColorKindKey } from "@/lib/types";
 import type { HouseholdMembership } from "@/lib/auth";
@@ -1499,6 +1500,7 @@ function HouseholdSettings({
   const [members, setMembers] = useState<MemberRow[] | null>(null);
   const [invitations, setInvitations] = useState<InvitationRow[] | null>(null);
   const [copiedTokenId, setCopiedTokenId] = useState<string | null>(null);
+  const [showTour, setShowTour] = useState(false);
   const isOwner = household.role === "owner";
 
   // Load members + pending invitations on mount + after any mutation
@@ -1514,6 +1516,7 @@ function HouseholdSettings({
 
   return (
     <section className="card space-y-6">
+      {showTour && <OnboardingTour onClose={() => setShowTour(false)} />}
       <div>
         <h2 className="font-semibold mb-2">世帯名</h2>
         <div className="flex gap-2 items-center">
@@ -1545,6 +1548,20 @@ function HouseholdSettings({
         {!isOwner && (
           <p className="text-xs text-muted-foreground mt-1">変更はオーナーのみ可能です。</p>
         )}
+      </div>
+
+      <div>
+        <h2 className="font-semibold mb-1">アプリの使い方</h2>
+        <p className="text-xs text-muted-foreground mb-2">
+          初回サインアップ時に表示されたツアーを再生します。
+        </p>
+        <button
+          type="button"
+          className="btn-ghost text-sm"
+          onClick={() => setShowTour(true)}
+        >
+          ツアーをもう一度見る
+        </button>
       </div>
 
       {memberships.length > 1 && (
