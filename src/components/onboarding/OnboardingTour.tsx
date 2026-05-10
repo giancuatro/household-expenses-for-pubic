@@ -49,7 +49,17 @@ const SLIDES: Slide[] = [
   },
 ];
 
-export function OnboardingTour() {
+type OnboardingTourProps = {
+  /**
+   * Called when the user finishes or skips. If absent, the tour calls
+   * `completeOnboarding()` and `router.refresh()` (the first-launch path).
+   * Pass an `onClose` to make the tour replayable from settings without
+   * touching the DB or navigation.
+   */
+  onClose?: () => void;
+};
+
+export function OnboardingTour({ onClose }: OnboardingTourProps = {}) {
   const router = useRouter();
   const [step, setStep] = React.useState(0);
   const [mode, setMode] = React.useState<Mode>(null);
@@ -63,6 +73,10 @@ export function OnboardingTour() {
 
   async function finish() {
     if (finishing) return;
+    if (onClose) {
+      onClose();
+      return;
+    }
     setFinishing(true);
     try {
       await completeOnboarding();
