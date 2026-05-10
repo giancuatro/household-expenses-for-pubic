@@ -1,9 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabaseBrowser } from "@/lib/supabase/browser";
 import { bootstrapHousehold } from "../actions/auth";
+
+/**
+ * Lightweight anti-bot defenses for the public /signup form.
+ *
+ * Without an SMTP-verified email confirmation, /signup is the easiest
+ * vector for spam-botnets to seed thousands of `auth.users` rows. Two
+ * cheap checks shrink that surface dramatically without any external
+ * service or domain setup:
+ *
+ *   1. Honeypot — a hidden `<input>` named "website" that real users
+ *      can't see (zero-size + visually hidden + tabIndex=-1). Most
+ *      naive form-fill bots populate every input by name; a non-empty
+ *      value fails the check.
+ *
+ *   2. Time gate — track when the page mounted and reject submissions
+ *      that arrive in less than 1.5 s. Humans need at least that long
+ *      to type even a minimal email + password.
+ *
+ * Both fail silently (the form pretends to succeed) so attackers don't
+ * get a signal to refine. We log nothing identifiable.
+ */
+const SIGNUP_MIN_FILL_MS = 1500;
 
 /**
  * Signup / household-creation page. Two modes:
@@ -29,12 +51,15 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [householdName, setHouseholdName] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [honeypot, setHoneypot] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [needConfirm, setNeedConfirm] = useState(false);
+  const mountedAtRef = useRef<number>(0);
 
   // Detect already-authed state on mount so we can hide email/password fields
   useEffect(() => {
+    mountedAtRef.current = Date.now();
     const sb = getSupabaseBrowser();
     sb.auth.getUser().then(({ data }) => {
       setAuthedUser(data.user ? { email: data.user.email ?? null } : null);
@@ -45,6 +70,17 @@ export default function SignupPage() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
+    // Anti-bot: honeypot field must be empty AND form must have been on
+    // screen for at least SIGNUP_MIN_FILL_MS. Fail silently (pretend to
+    // succeed) so scrapers don't learn the threshold.
+    const elapsed = Date.now() - (mountedAtRef.current || Date.now());
+    if (honeypot.trim().length > 0 || elapsed < SIGNUP_MIN_FILL_MS) {
+      // Show the fake "check your email" state and stop. No DB writes.
+      setLoading(false);
+      setNeedConfirm(true);
+      return;
+    }
 
     const trimmedHh = householdName.trim();
     if (!trimmedHh) {
@@ -123,6 +159,29 @@ export default function SignupPage() {
         onSubmit={onSubmit}
         className="relative w-full max-w-sm rounded-2xl border border-border bg-card/90 backdrop-blur shadow-xl p-6 space-y-5"
       >
+        {/*
+          Honeypot — visually hidden to humans, presented to naive form-fill
+          bots as a normal input. Real users never type here, so any value
+          flags the submission as automated. Kept off-screen via inline style
+          so Tailwind's `display:none` doesn't get tree-shaken away.
+        */}
+        <div
+          aria-hidden="true"
+          style={{ position: "absolute", left: "-9999px", top: "-9999px", width: 1, height: 1, overflow: "hidden" }}
+        >
+          <label>
+            Website (leave blank)
+            <input
+              type="text"
+              name="website"
+              tabIndex={-1}
+              autoComplete="off"
+              value={honeypot}
+              onChange={(e) => setHoneypot(e.target.value)}
+            />
+          </label>
+        </div>
+
         <div className="space-y-1">
           <div className="inline-flex items-center justify-center rounded-2xl bg-primary/15 text-primary w-12 h-12 text-xl font-bold mb-2">
             ¥
