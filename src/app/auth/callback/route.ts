@@ -20,12 +20,27 @@ import { getSupabaseServer, getSupabaseAdmin } from "@/lib/supabase/server";
  * If neither `code` nor `token_hash` is present, we redirect to /login with
  * an error so the user sees what went wrong instead of a blank screen.
  */
+/**
+ * Limit `?next=` to a relative path on this origin so a crafted
+ * `?next=https://evil.example` cannot turn the callback into an
+ * open redirect after a successful login.
+ */
+function safeNext(raw: string | null): string {
+  if (!raw) return "/";
+  // Reject anything that isn't an in-app absolute path. Includes:
+  //   - protocol-relative ("//evil") which the URL constructor treats as a host
+  //   - explicit schemes ("https:", "javascript:", ...)
+  //   - paths missing the leading slash
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw;
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
   const tokenHash = url.searchParams.get("token_hash");
   const otpType = url.searchParams.get("type") as EmailOtpType | null;
-  const next = url.searchParams.get("next") || "/";
+  const next = safeNext(url.searchParams.get("next"));
   const householdName = url.searchParams.get("household_name");
   const displayName = url.searchParams.get("display_name");
   const inviteToken = url.searchParams.get("invite");

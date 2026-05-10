@@ -13,9 +13,19 @@ export default function LoginPage() {
   );
 }
 
+/**
+ * Restrict ?next= to in-app paths to prevent open-redirect attacks.
+ * `https://evil.example` and `//evil.example` both fall back to `/`.
+ */
+function safeNext(raw: string | null | undefined): string {
+  if (!raw) return "/";
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw;
+}
+
 function LoginForm() {
   const search = useSearchParams();
-  const next = search?.get("next") || "/";
+  const next = safeNext(search?.get("next"));
   const callbackError = search?.get("error") || null;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
