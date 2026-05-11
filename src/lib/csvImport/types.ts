@@ -26,11 +26,19 @@ export interface ParseResult {
   periodEnd: string | null;
 }
 
+export type ParserId = "amex" | "amex-pdf" | "generic";
+
 export interface ParserDefinition {
-  id: "amex" | "generic";
+  id: ParserId;
   label: string;
-  /** Parse a decoded CSV body. Throws on hard failures (no usable rows). */
+  /**
+   * Parse a decoded body. For CSV parsers the body is the CSV text; for PDF
+   * parsers it's the text extracted by lib/csvImport/pdf.ts. Throws on hard
+   * failures (no usable rows).
+   */
   parse: (body: string, opts?: ParserOptions) => ParseResult;
+  /** Source format. Drives whether the import action decodes bytes as CSV or extracts PDF text first. */
+  inputFormat: "csv" | "pdf";
 }
 
 export interface ParserOptions {

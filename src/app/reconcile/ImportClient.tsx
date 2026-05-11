@@ -5,14 +5,14 @@ import { useState } from "react";
 import { importCardStatement } from "../actions/reconcile";
 import type { PaymentMethodRow, UserRow } from "@/lib/types";
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 interface Props {
   paymentMethods: PaymentMethodRow[];
   users: UserRow[];
 }
 
-type ParserId = "amex" | "generic";
+type ParserId = "amex" | "amex-pdf" | "generic";
 
 export default function ImportClient({ paymentMethods }: Props) {
   const router = useRouter();
@@ -28,8 +28,8 @@ export default function ImportClient({ paymentMethods }: Props) {
     e.preventDefault();
     setErr(null);
     if (!pmId) return setErr("支払方法（クレジットカード）を登録してください。");
-    if (!file) return setErr("CSV ファイルを選択してください。");
-    if (file.size > MAX_FILE_BYTES) return setErr("ファイルサイズが上限（5MB）を超えています。");
+    if (!file) return setErr("ファイルを選択してください（CSV または PDF）。");
+    if (file.size > MAX_FILE_BYTES) return setErr("ファイルサイズが上限（8MB）を超えています。");
 
     setBusy(true);
     try {
@@ -89,8 +89,9 @@ export default function ImportClient({ paymentMethods }: Props) {
               value={parser}
               onChange={(e) => setParser(e.target.value as ParserId)}
             >
-              <option value="amex">American Express（日本版）</option>
-              <option value="generic">汎用（列を指定）</option>
+              <option value="amex">American Express（CSV 明細）</option>
+              <option value="amex-pdf">American Express（PDF 明細）</option>
+              <option value="generic">汎用（列を指定 / CSV）</option>
             </select>
           </label>
         </div>
@@ -150,10 +151,16 @@ export default function ImportClient({ paymentMethods }: Props) {
         )}
 
         <label className="block space-y-1">
-          <span className="text-sm font-medium">CSV ファイル</span>
+          <span className="text-sm font-medium">
+            {parser === "amex-pdf" ? "PDF ファイル" : "CSV ファイル"}
+          </span>
           <input
             type="file"
-            accept=".csv,text/csv,application/vnd.ms-excel"
+            accept={
+              parser === "amex-pdf"
+                ? ".pdf,application/pdf"
+                : ".csv,text/csv,application/vnd.ms-excel"
+            }
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             required
             className="block w-full text-sm"

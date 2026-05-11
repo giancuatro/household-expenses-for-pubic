@@ -12,7 +12,10 @@ const withSerwist = withSerwistInit({
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    serverActions: { bodySizeLimit: "2mb" },
+    // Lifted from the default 1MB and the previous 2MB cap so credit-card
+    // PDF statements (~5–8MB once base64-encoded becomes ~10MB) can flow
+    // through importCardStatement as a Server Action.
+    serverActions: { bodySizeLimit: "12mb" },
     // Tree-shakes recharts (~100kB savings) and de-duplicates clsx imports.
     optimizePackageImports: ["recharts", "clsx"],
   },

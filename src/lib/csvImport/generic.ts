@@ -61,4 +61,5 @@ export const genericParser: ParserDefinition = {
   id: "generic",
   label: "汎用（列を指定してインポート）",
   parse: parseGeneric,
+  inputFormat: "csv",
 };

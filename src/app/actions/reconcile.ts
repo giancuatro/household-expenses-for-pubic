@@ -5,7 +5,7 @@ import { z } from "zod";
 import { createHash, randomUUID } from "crypto";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
-import { decodeCsvBytes, getParser } from "@/lib/csvImport";
+import { decodeCsvBytes, extractPdfText, getParser, looksLikePdf } from "@/lib/csvImport";
 import { findGroupMatches, reconcile, statusFromConfidence, type CandidateTxn, type CardRow } from "@/lib/reconcile/matcher";
 import { monthKey } from "@/lib/format";
 import type { TxnKind } from "@/lib/types";
@@ -14,8 +14,8 @@ import type { TxnKind } from "@/lib/types";
 /*  Constants                                                              */
 /* ---------------------------------------------------------------------- */
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024;        // 5 MB
-const ALLOWED_PARSERS = ["amex", "generic"] as const;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;        // 8 MB (PDF statements are larger than CSVs)
+const ALLOWED_PARSERS = ["amex", "amex-pdf", "generic"] as const;
 type ParserId = (typeof ALLOWED_PARSERS)[number];
 
 /* ---------------------------------------------------------------------- */
@@ -96,9 +96,24 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     };
   }
 
-  const body = decodeCsvBytes(new Uint8Array(buf));
   const parser = getParser(parsed.parser);
   if (!parser) throw new Error(`不明なパーサ: ${parsed.parser}`);
+
+  // For PDF parsers we run pdf.js text extraction first; CSV parsers get the
+  // Shift_JIS / UTF-8-decoded body straight from bytes. We also cross-check
+  // the parser's declared input format against the file's magic bytes so
+  // selecting "AMEX CSV" on a PDF (or vice versa) fails fast with a clear
+  // message instead of producing garbage rows.
+  const bytes = new Uint8Array(buf);
+  const isPdf = looksLikePdf(bytes);
+  if (parser.inputFormat === "pdf" && !isPdf) {
+    throw new Error("選択したパーサは PDF 用ですが、アップロードされたファイルは PDF ではありません。");
+  }
+  if (parser.inputFormat === "csv" && isPdf) {
+    throw new Error("選択したパーサは CSV 用ですが、PDF がアップロードされました。PDF 用パーサを選び直してください。");
+  }
+  const body =
+    parser.inputFormat === "pdf" ? await extractPdfText(bytes) : decodeCsvBytes(bytes);
   const result = parser.parse(body, {
     columns: parsed.columns,
     skipHeaderRows: parsed.skipHeaderRows,

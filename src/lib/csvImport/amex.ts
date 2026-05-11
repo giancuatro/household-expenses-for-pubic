@@ -98,6 +98,7 @@ function parseAmex(body: string): ParseResult {
 
 export const amexParser: ParserDefinition = {
   id: "amex",
-  label: "American Express（日本版）",
+  label: "American Express（CSV 明細）",
   parse: parseAmex,
+  inputFormat: "csv",
 };
