@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchLivePrice } from "@/lib/stockPrice";
 import { getAuthUser } from "@/lib/auth";
 
-const TICKER_RE = /^[A-Za-z0-9.\-]{1,12}$/;
+// Keep the regex in sync with /api/stock-history. Underscore covers fund
+// ids (SBI_WORLD, DAIWA_NDX); 16-char cap covers longer broker codes.
+const TICKER_RE = /^[A-Za-z0-9._\-]{1,16}$/;
 
 /**
  * GET /api/stock-price?ticker=MSFT

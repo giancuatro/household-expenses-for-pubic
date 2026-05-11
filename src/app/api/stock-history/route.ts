@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { STOCK_LIST } from "@/lib/stockList";
 import { getAuthUser } from "@/lib/auth";
 
-const TICKER_RE = /^[A-Za-z0-9.\-]{1,12}$/;
+// Allow underscore + extend length cap so fund tickers (e.g. SBI_WORLD,
+// DAIWA_NDX) and longer broker-specific IDs pass validation. Without this
+// the chart's history fetch 400s and the asset-trend line collapses to
+// `current_price_usd × quantity` for those holdings — looks like
+// acquisition cost on the chart.
+const TICKER_RE = /^[A-Za-z0-9._\-]{1,16}$/;
 const FROM_RE = /^\d{4}-\d{2}(-\d{2})?$/;
 
 /**
