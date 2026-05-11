@@ -4,110 +4,42 @@ import { parseJpDate, parseYen } from "./normalize";
 /**
  * Auto-detecting PDF statement parser.
  *
- * Card-issuer PDFs differ enormously in their internal text encoding:
+ * Card-issuer PDFs vary enormously in layout. We support multiple
+ * extraction *strategies* and pick the one that yields the most rows for
+ * each input. New issuers can be added by appending another strategy to
+ * the list without changing call sites; once a household imports a given
+ * card the winning strategy id is remembered in card_pdf_format_memory
+ * so subsequent re-imports skip the trial step.
  *
- *   - 楽天 / JCB / セゾン / 三井住友: embed a CJK font that pdf2json reads
- *     out cleanly. Dates appear as "2026/03/11" and merchant names as real
- *     Japanese. Transactions can have 1 amount column (JCB) or 5 (楽天:
- *     利用金額 / 手数料 / 支払総額 / 当月請求額 / 翌月繰越残高).
+ * Strategies shipped today:
  *
- *   - AMEX (Marriott Bonvoy Premium): embeds a Type3 custom font with
- *     proprietary glyph mappings. pdf2json can't decode the glyphs and
- *     substitutes them with Latin1 extended chars. As a result "月" comes
- *     back as "A", "日" as "À", "年" as "ü", and most kanji as garbage like
- *     "³²DÐÏPCÔÊ" (for "前回分口座振替金額"). Numbers and ASCII / katakana
- *     are preserved.
+ *   compact     — Rakuten, JCB, AMEX, セゾン, 三井住友. Date is at the
+ *                 start of the line in one of: "2026/03/11", "2026年03月
+ *                 11日", "3月19日", or AMEX's Type3-garbled "3A19À".
+ *                 Merchant and amount are on the same line.
  *
- * To handle both with one parser:
+ *   split-col   — VIEW Card. The PDF table has 年/月/日 as three separate
+ *                 columns ("25  03  14") followed by amount columns. The
+ *                 merchant text lives on the line(s) adjacent to the date
+ *                 line; we walk N-1 and N+1, stripping payment-method-only
+ *                 lines like "１回払".
  *
- *   1. The date regex uses `[^\d\s]` as a single-char separator instead of
- *      locking to 年月日 — that matches both real kanji and AMEX's garbled
- *      A/À/ü.
- *   2. Year may be missing on the date line (AMEX prints just M月D日). We
- *      pre-scan the body for the first full year-bearing date (the
- *      明細書作成日 header) and use that as the reference year for any
- *      year-less rows.
- *   3. Amount regex allows a leading `-` so refund rows come through as
- *      negative integers.
- *   4. AMEX includes a "前回分口座振替金額" row representing the previous
- *      month's bank withdrawal — that's a settlement, not a card charge.
- *      We skip rows whose merchant text is short and lacks any kana or
- *      enough ASCII letters; that catches the bank-withdrawal pattern
- *      without affecting real merchants like "CRUISE AMERICA - CEN".
- *
- * The "first amount after the date" rule already handles the multi-column
- * Rakuten case (column 1 = 利用金額, the real charge) and the single-amount
- * AMEX / JCB case (first == only == charge).
+ * The export `parsePdfAuto(body)` runs every strategy and returns the
+ * winning result. `runStrategy(body, id)` lets callers (the
+ * format-memory layer) skip detection when they already know which
+ * strategy to use.
  */
 
-// CJK char class used for left/right boundary checks. Includes CJK unified,
+// CJK char class used for left/right boundary checks. Covers CJK unified,
 // hiragana, katakana, and half-width katakana (e.g. ｺｽﾄｺ).
 const CJK = "\\u4E00-\\u9FFF\\u3040-\\u30FF\\uFF66-\\uFF9F";
 
-// Date at line start. Optional 4-digit year + single-char separator; then
-// 1-2 digit month + single-char separator; then 1-2 digit day + optional
-// single-char separator. The lookahead requires the day to be followed by
-// whitespace, end of line, or a non-digit char — this rejects page numbers
-// like "1 /15  ぺ ージ" (separator after month is whitespace, fails) and
-// rejects amount-looking strings like "184ポイント" (separator after second
-// digit is also a digit, fails).
-const DATE_PREFIX_RE =
-  /^\s*(?:(\d{4})[^\d\s])?\s*(\d{1,2})[^\d\s](\d{1,2})[^\d\s]?(?=\s|$|[^\d])/;
+// ─── shared utilities ────────────────────────────────────────────────
 
-// Amount token. The sign portion requires WHITESPACE before AND after the
-// `-` so that merchant-embedded identifiers like "ARAMARK LAKE POWELL
-// C- 96719" or "USCUSTOMS ESTA APPL PMT 098000002" don't get mis-parsed as
-// negative amounts. The lookbehind/lookahead reject digits adjacent to CJK
-// chars so embedded year fragments (e.g. "...銀行2026/04/22") and "184
-// ポイント" can't slip through as amounts.
 const AMOUNT_TOKEN_RE = new RegExp(
   `(?<![0-9${CJK}])(?:(?<=\\s)-\\s+)?(?:[¥￥]\\s*)?(\\d{1,3}(?:,\\d{3})+|\\d{3,})(?:\\s*円)?(?![0-9${CJK}])`,
   "g",
 );
-
-// Detects "another full date" appearing in the trailing portion of a
-// transaction line. AMEX prints its statement period header like
-// "2026年3月20日から2026年4月19日まで" — that's two dates on one line.
-// If we see that pattern in the merchant region, the line is a header,
-// not a transaction, and the "amount" we'd otherwise extract is actually
-// a year fragment.
-const EMBEDDED_DATE_RE = /\d{4}[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/;
-
-/**
- * Scan the body for the first complete 年/月/日 date and return its year.
- * For AMEX PDFs this lands on 明細書作成日 ("2026ü4A19À" → 2026). For
- * Rakuten PDFs this still works (the first dated row carries its own year).
- * Returns null if the body has no year-bearing date.
- */
-function findReferenceYear(body: string): number | null {
-  const re = /(\d{4})[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/;
-  const m = body.match(re);
-  if (!m) return null;
-  const y = parseInt(m[1], 10);
-  if (y < 1900 || y > 2200) return null;
-  return y;
-}
-
-interface DateMatch {
-  /** Full text consumed by the date prefix, so the merchant slice starts right after. */
-  raw: string;
-  /** ISO YYYY-MM-DD. */
-  date: string;
-}
-
-function matchDate(line: string, refYear: number | null): DateMatch | null {
-  const m = line.match(DATE_PREFIX_RE);
-  if (!m) return null;
-  const [full, y, mo, d] = m;
-  const yearStr = y ?? (refYear != null ? String(refYear) : "");
-  if (!yearStr) return null;
-  // Combine into a normalized YYYY/MM/DD string and let parseJpDate validate
-  // calendar bounds.
-  const normalized = `${yearStr}/${mo}/${d}`;
-  const iso = parseJpDate(normalized);
-  if (!iso) return null;
-  return { raw: full, date: iso };
-}
 
 interface AmountCandidate {
   amount: number;
@@ -120,19 +52,8 @@ interface AmountCandidate {
 /**
  * Pick the amount-column value out of a line that may also contain numeric
  * merchant identifiers ("ARAMARK LAKE POWELL C- 96719") or transaction
- * reference numbers ("USCUSTOMS ESTA APPL PMT 098000002").
- *
- * Heuristic: real card-statement amounts are written with thousand-separator
- * commas, so prefer the FIRST comma-formatted token. That works for:
- *
- *   - Rakuten (5 amount columns, all commaed, first = 利用金額 ✓)
- *   - AMEX (merchant ID has bare digits, charge column has commas ✓)
- *   - Refunds ("- 49,422" has commas, embedded ID does not ✓)
- *
- * When no comma-formatted token exists, fall back to the rightmost bare
- * token. That covers small amounts like "MAZDA 220" where ¥220 has no
- * comma. If multiple bare candidates exist (rare), the rightmost is more
- * likely the amount column than a merchant suffix.
+ * reference numbers ("USCUSTOMS ESTA APPL PMT 098000002"). Real amount
+ * columns use thousand-separator commas; embedded IDs don't.
  */
 function pickRowAmount(s: string): AmountCandidate | null {
   AMOUNT_TOKEN_RE.lastIndex = 0;
@@ -161,10 +82,9 @@ function pickRowAmount(s: string): AmountCandidate | null {
  *   4A10À  ³²DÐÏPCÔÊ                                          - 625,838
  *
  * The merchant text is the Type3-garbled rendering of "前回分口座振替金額"
- * — uppercase Latin and extended Latin1 chars only, no kana, very few
- * actual a-z letters. Real refund merchants ("CRUISE AMERICA - CEN", "ST.
- * GEORGE RV PARK", etc.) have a-zA-Z spelling and easily clear the
- * threshold below, so this heuristic only catches the settlement row.
+ * — uppercase Latin + extended Latin1 chars only, no kana, very few
+ * actual a-z letters. Real refund merchants ("CRUISE AMERICA - CEN",
+ * etc.) clear the threshold and pass through.
  */
 function looksLikeBankWithdrawal(merchant: string, amount: number): boolean {
   if (amount >= 0) return false;
@@ -173,7 +93,27 @@ function looksLikeBankWithdrawal(merchant: string, amount: number): boolean {
   return asciiLetters.length < 10;
 }
 
-function parsePdfAuto(body: string): ParseResult {
+// ─── strategy 1: compact (Rakuten / JCB / AMEX / 三井住友) ─────────────
+
+// Date at line start. Optional 4-digit year + single-char separator; then
+// 1-2 digit month + single-char separator; then 1-2 digit day + optional
+// single-char separator. Lookahead rejects page numbers like "1 /15".
+const COMPACT_DATE_RE =
+  /^\s*(?:(\d{4})[^\d\s])?\s*(\d{1,2})[^\d\s](\d{1,2})[^\d\s]?(?=\s|$|[^\d])/;
+
+// Statement-period headers like "2026年3月20日から2026年4月19日まで"
+// contain a second complete date — skip those.
+const EMBEDDED_DATE_RE = /\d{4}[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/;
+
+function findReferenceYear(body: string): number | null {
+  const re = /(\d{4})[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/;
+  const m = body.match(re);
+  if (!m) return null;
+  const y = parseInt(m[1], 10);
+  return y >= 1900 && y <= 2200 ? y : null;
+}
+
+function extractCompact(body: string): ParseResult {
   const refYear = findReferenceYear(body);
   const lines = body
     .split(/\r?\n/)
@@ -187,64 +127,209 @@ function parsePdfAuto(body: string): ParseResult {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const dateHit = matchDate(line, refYear);
-    if (!dateHit) continue;
+    const dm = line.match(COMPACT_DATE_RE);
+    if (!dm) continue;
+    const [full, y, mo, d] = dm;
+    const yearStr = y ?? (refYear != null ? String(refYear) : "");
+    if (!yearStr) continue;
+    const iso = parseJpDate(`${yearStr}/${mo}/${d}`);
+    if (!iso) continue;
 
-    let merchantRaw = line.slice(dateHit.raw.length).trim();
-
-    // Reject header / period lines that carry a second embedded date
-    // (e.g. "2026年3月20日から2026年4月19日まで"). The year fragment of
-    // the second date would otherwise be captured as a bogus amount.
+    let merchantRaw = line.slice(full.length).trim();
     if (EMBEDDED_DATE_RE.test(merchantRaw)) continue;
 
     let firstAmount = pickRowAmount(merchantRaw);
     if (!firstAmount && i + 1 < lines.length) {
-      const next = lines[i + 1];
-      const a = pickRowAmount(next);
+      const a = pickRowAmount(lines[i + 1]);
       if (a) {
         firstAmount = a;
         i += 1;
       }
     }
-    if (!firstAmount) continue; // dated heading line without an amount
+    if (!firstAmount) continue;
 
-    let merchant = merchantRaw.slice(0, firstAmount.start).trim();
-    // Strip Rakuten / 三井住友-style trailing tokens: payment-method labels
-    // and 本人/家族/配偶者 indicators that sit between the merchant and the
-    // amount cluster. No-op for AMEX rows.
-    merchant = merchant
+    let merchant = merchantRaw.slice(0, firstAmount.start).trim()
       .replace(/\s*(?:\d{1,2}回(?:払い)?|リボ(?:払い|変更)?|一括(?:払い)?|分割(?:払い|変更)?|ボ(?:\d+回|併用|月))\s*$/u, "")
       .replace(/\s*(?:本人|家族|配偶者)?\*?\s*$/u, "")
       .trim();
     if (!merchant) merchant = "(不明)";
 
     if (looksLikeBankWithdrawal(merchant, firstAmount.amount)) {
-      skipped.push({
-        line: i + 1,
-        raw: line,
-        reason: "前月分の口座振替（カード取引ではない）",
-      });
+      skipped.push({ line: i + 1, raw: line, reason: "前月分の口座振替（カード取引ではない）" });
       continue;
     }
 
-    if (!minDate || dateHit.date < minDate) minDate = dateHit.date;
-    if (!maxDate || dateHit.date > maxDate) maxDate = dateHit.date;
+    if (!minDate || iso < minDate) minDate = iso;
+    if (!maxDate || iso > maxDate) maxDate = iso;
     rows.push({
-      date: dateHit.date,
+      date: iso,
       amount: firstAmount.amount,
       merchant,
-      raw: { date: dateHit.raw, amount: firstAmount.raw, merchant },
+      raw: { date: full, amount: firstAmount.raw, merchant },
     });
   }
 
-  if (rows.length === 0) {
+  return { rows, skipped, periodStart: minDate, periodEnd: maxDate };
+}
+
+// ─── strategy 2: split-col (VIEW Card) ───────────────────────────────
+
+// VIEW prints YY / MM / DD as three separate columns separated by
+// significant whitespace, immediately followed by the amount column.
+// Anchoring on ≥2 spaces between the year/month/day groups rejects more
+// general patterns like "1 /15 ページ".
+const SPLIT_DATE_RE = /^\s*(\d{2})\s{2,}(\d{1,2})\s{2,}(\d{1,2})\s{2,}/;
+
+// Lines that are just a payment-method indicator (no merchant text). The
+// VIEW layout sometimes puts this between the merchant and the date row.
+// Note the [\d０-９] union: VIEW prints "１回払" with full-width digits and JS
+// \d only matches ASCII even under /u.
+const PAYMENT_METHOD_ONLY_RE = /^\s*(?:[\d０-９]{1,2}\s*回(?:払い|払)?|リボ(?:払い)?|一括(?:払い)?|分割(?:払い)?)\s*$/u;
+
+function isPureNumericOrPunctLine(s: string): boolean {
+  return /^[\d\s,.\-¥￥円％%]+$/u.test(s) && /\d/.test(s);
+}
+
+function looksLikeHeaderText(s: string): boolean {
+  return (
+    /会員番号|\*\*\*\*-/.test(s) ||
+    /^.{0,2}様$/u.test(s) ||
+    /^[ァ-ヿー\s]{0,20}様$/u.test(s)
+  );
+}
+
+/**
+ * For a split-column date row at line `dateIdx`, reconstruct the merchant
+ * string by walking the immediately-adjacent lines. VIEW's pdf2json output
+ * sometimes wraps a long merchant across two non-adjacent lines (the wrap
+ * end lands BEFORE the date row and the wrap start lands AFTER). We pull
+ * both candidates and concatenate in display order.
+ */
+function findSplitMerchant(lines: string[], dateIdx: number): string {
+  const at = (i: number) => (i >= 0 && i < lines.length ? lines[i].trim() : "");
+  const skip = (s: string) =>
+    !s ||
+    PAYMENT_METHOD_ONLY_RE.test(s) ||
+    SPLIT_DATE_RE.test(s) ||
+    COMPACT_DATE_RE.test(s) ||
+    isPureNumericOrPunctLine(s) ||
+    looksLikeHeaderText(s);
+
+  // Prefer N-1; if that's just a payment method or header, fall back to
+  // a 2-line reconstruction using N+1 (wrap start) + N-2 (wrap end) which
+  // is the AMEX/VIEW pattern pdf2json produces when the merchant wraps.
+  const nm1 = at(dateIdx - 1);
+  if (nm1 && !skip(nm1)) {
+    // The merchant may still have a trailing payment-method label glued
+    // on (single-line case). Strip it. Includes full-width digit support.
+    return nm1.replace(/\s*(?:[\d０-９]{1,2}\s*回(?:払い|払)?|リボ(?:払い)?|一括(?:払い)?|分割(?:払い)?)\s*$/u, "").trim() || "(不明)";
+  }
+  const wrapStart = at(dateIdx + 1);
+  const wrapEnd = at(dateIdx - 2);
+  const startUsable = wrapStart && !skip(wrapStart);
+  const endUsable = wrapEnd && !skip(wrapEnd);
+  if (startUsable && endUsable) return (wrapStart + wrapEnd).trim();
+  if (startUsable) return wrapStart;
+  if (endUsable) return wrapEnd;
+  return "(不明)";
+}
+
+function extractSplitCol(body: string): ParseResult {
+  const lines = body.split(/\r?\n/);
+  // No trim — keep the leading whitespace so SPLIT_DATE_RE column-anchoring
+  // works. Just strip trailing newlines via the split.
+
+  const rows: ParsedRow[] = [];
+  const skipped: ParseResult["skipped"] = [];
+  let minDate: string | null = null;
+  let maxDate: string | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(SPLIT_DATE_RE);
+    if (!m) continue;
+    const [, yy, mo, d] = m;
+    // 2-digit year → 2000+YY. (We don't ship a 19xx fallback because no
+    // active card statements are from before 2000.)
+    const year = 2000 + parseInt(yy, 10);
+    const iso = parseJpDate(`${year}/${mo}/${d}`);
+    if (!iso) continue;
+
+    // Amount columns sit after the date columns on the same line.
+    const rest = lines[i].slice(m[0].length);
+    const amount = pickRowAmount(rest);
+    if (!amount) continue;
+
+    const merchant = findSplitMerchant(
+      lines.map((l) => l.trim()), // findSplitMerchant operates on trimmed lines
+      i,
+    );
+
+    if (looksLikeBankWithdrawal(merchant, amount.amount)) {
+      skipped.push({ line: i + 1, raw: lines[i], reason: "前月分の口座振替（カード取引ではない）" });
+      continue;
+    }
+
+    if (!minDate || iso < minDate) minDate = iso;
+    if (!maxDate || iso > maxDate) maxDate = iso;
+    rows.push({
+      date: iso,
+      amount: amount.amount,
+      merchant,
+      raw: { date: `${yy} ${mo} ${d}`, amount: amount.raw, merchant },
+    });
+  }
+
+  return { rows, skipped, periodStart: minDate, periodEnd: maxDate };
+}
+
+// ─── strategy registry ────────────────────────────────────────────────
+
+export type PdfStrategyId = "compact" | "split-col";
+
+const STRATEGIES: Record<PdfStrategyId, (body: string) => ParseResult> = {
+  compact: extractCompact,
+  "split-col": extractSplitCol,
+};
+
+export const ALL_PDF_STRATEGY_IDS: PdfStrategyId[] = ["compact", "split-col"];
+
+/** Run a single named strategy. Used when format memory tells us the winner. */
+export function runPdfStrategy(body: string, id: PdfStrategyId): ParseResult {
+  const fn = STRATEGIES[id];
+  if (!fn) throw new Error(`unknown PDF strategy: ${id}`);
+  return fn(body);
+}
+
+/**
+ * Try every strategy, return the winner.
+ *
+ * "Winner" = the strategy that produced the most rows. Ties are broken by
+ * the strategy's order in ALL_PDF_STRATEGY_IDS (compact wins ties because
+ * it's the most common format). If every strategy yields 0 rows we throw
+ * a friendly error.
+ */
+export function pickBestPdfStrategy(body: string): {
+  strategy: PdfStrategyId;
+  result: ParseResult;
+} {
+  let best: { strategy: PdfStrategyId; result: ParseResult } | null = null;
+  for (const id of ALL_PDF_STRATEGY_IDS) {
+    const result = STRATEGIES[id](body);
+    if (!best || result.rows.length > best.result.rows.length) {
+      best = { strategy: id, result };
+    }
+  }
+  if (!best || best.result.rows.length === 0) {
     throw new Error(
       "PDF から取り込める明細行を抽出できませんでした。スキャン版・暗号化 PDF はサポート外です。" +
         "可能であれば CSV 形式の明細をアップロードしてください。",
     );
   }
+  return best;
+}
 
-  return { rows, skipped, periodStart: minDate, periodEnd: maxDate };
+function parsePdfAuto(body: string): ParseResult {
+  return pickBestPdfStrategy(body).result;
 }
 
 export const pdfAutoParser: ParserDefinition = {
