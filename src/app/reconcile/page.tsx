@@ -15,7 +15,6 @@ interface ImportRow {
   period_end: string | null;
   row_count: number;
   imported_at: string;
-  archived_at: string | null;
 }
 
 export default async function ReconcileIndexPage() {
@@ -28,7 +27,7 @@ export default async function ReconcileIndexPage() {
     listUsers(hid),
     sb
       .from("card_statement_imports")
-      .select("id, payment_method_id, parser, source_filename, period_start, period_end, row_count, imported_at, archived_at")
+      .select("id, payment_method_id, parser, source_filename, period_start, period_end, row_count, imported_at")
       .eq("household_id", hid)
       .order("imported_at", { ascending: false })
       .limit(30),
@@ -65,7 +64,6 @@ export default async function ReconcileIndexPage() {
                   <div className="text-xs text-muted-foreground">
                     {imp.period_start ?? "?"} 〜 {imp.period_end ?? "?"} ・ {imp.row_count} 件 ・{" "}
                     {new Date(imp.imported_at).toLocaleString("ja-JP")}
-                    {imp.archived_at && <span className="ml-2 text-amber-600">アーカイブ済</span>}
                   </div>
                 </div>
                 <Link href={`/reconcile/${imp.id}`} className="btn-secondary text-sm shrink-0">

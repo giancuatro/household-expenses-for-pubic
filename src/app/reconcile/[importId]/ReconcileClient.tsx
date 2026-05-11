@@ -85,12 +85,23 @@ export default function ReconcileClient({
     router.refresh();
   }
 
+  /**
+   * Run an action, then either:
+   *   - if the action returned `{ importDeleted: true }` (because the row
+   *     they just processed was the last 未処理 row), navigate back to the
+   *     imports index — the detail page no longer exists,
+   *   - otherwise refresh the current page in place.
+   */
   function withErr(fn: () => Promise<unknown>) {
     return () =>
       startTransition(async () => {
         setErr(null);
         try {
-          await fn();
+          const result = (await fn()) as { importDeleted?: boolean } | undefined;
+          if (result?.importDeleted) {
+            router.push("/reconcile");
+            return;
+          }
           refresh();
         } catch (e) {
           setErr(e instanceof Error ? e.message : String(e));
@@ -137,9 +148,21 @@ export default function ReconcileClient({
             type="button"
             className="btn-secondary text-sm"
             disabled={pending}
-            onClick={withErr(() => archiveImport(importRow.id))}
+            onClick={() => {
+              if (!confirm("このインポートを削除しますか？\n承認済みの家計簿取引は残ります。"))
+                return;
+              startTransition(async () => {
+                setErr(null);
+                try {
+                  await archiveImport(importRow.id);
+                  router.push("/reconcile");
+                } catch (e) {
+                  setErr(e instanceof Error ? e.message : String(e));
+                }
+              });
+            }}
           >
-            アーカイブ
+            削除
           </button>
         </div>
         {err && (

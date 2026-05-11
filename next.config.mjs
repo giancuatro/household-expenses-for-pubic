@@ -18,6 +18,12 @@ const nextConfig = {
     serverActions: { bodySizeLimit: "12mb" },
     // Tree-shakes recharts (~100kB savings) and de-duplicates clsx imports.
     optimizePackageImports: ["recharts", "clsx"],
+    // unpdf is an ESM-only wrapper around pdf.js. Both bundles use dynamic
+    // imports and worker-style loaders that webpack tries to inline; the
+    // result is a runtime "Server Components render" error when the lambda
+    // boots. Marking them external keeps them as raw node_modules imports
+    // resolved at runtime, which is the runtime they're built for.
+    serverComponentsExternalPackages: ["unpdf", "pdfjs-dist"],
   },
   // Defensive HTTP response headers applied to every route. Caching headers
   // for static assets are added in the second/third entries below.

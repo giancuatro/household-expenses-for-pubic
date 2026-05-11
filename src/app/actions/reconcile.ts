@@ -299,33 +299,69 @@ async function resolveSiblingIds(
   sb: ReturnType<typeof getSupabaseServer>,
   hid: string,
   stagingId: string,
-): Promise<{ ids: string[]; matchedTxnId: string | null; groupId: string | null }> {
+): Promise<{
+  ids: string[];
+  matchedTxnId: string | null;
+  groupId: string | null;
+  importId: string;
+}> {
   const { data: row } = await sb
     .from("staging_card_transactions")
-    .select("id, matched_transaction_id, match_group_id")
+    .select("id, matched_transaction_id, match_group_id, import_id")
     .eq("household_id", hid)
     .eq("id", stagingId)
     .single();
   if (!row) throw new Error("明細行が見つかりません。");
   const groupId = (row.match_group_id as string | null) ?? null;
   const matchedTxnId = (row.matched_transaction_id as string | null) ?? null;
-  if (!groupId) return { ids: [stagingId], matchedTxnId, groupId: null };
+  const importId = row.import_id as string;
+  if (!groupId) return { ids: [stagingId], matchedTxnId, groupId: null, importId };
   const { data: siblings } = await sb
     .from("staging_card_transactions")
     .select("id")
     .eq("household_id", hid)
     .eq("match_group_id", groupId);
   const ids = ((siblings ?? []) as Array<{ id: string }>).map((r) => r.id);
-  return { ids: ids.length > 0 ? ids : [stagingId], matchedTxnId, groupId };
+  return { ids: ids.length > 0 ? ids : [stagingId], matchedTxnId, groupId, importId };
 }
 
-export async function acceptMatch(input: z.infer<typeof RowIdSchema>) {
+/**
+ * Auto-cleanup: when every staging row in an import is in a terminal state
+ * (confirmed / created / ignored), delete the import header. Cascade removes
+ * the staging rows; transactions keep their data, only their statement_row_id
+ * back-pointer is nulled out via the FK's ON DELETE SET NULL. The user's
+ * stated requirement is "once manual reconciliation is done, drop the file
+ * from the DB" — this is that hook.
+ */
+async function maybeAutoDeleteImport(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  importId: string,
+): Promise<boolean> {
+  const { count, error } = await sb
+    .from("staging_card_transactions")
+    .select("id", { count: "exact", head: true })
+    .eq("household_id", hid)
+    .eq("import_id", importId)
+    .in("status", ["unmatched", "suggested"]);
+  if (error) return false;
+  if ((count ?? 0) > 0) return false;
+  const { error: delErr } = await sb
+    .from("card_statement_imports")
+    .delete()
+    .eq("household_id", hid)
+    .eq("id", importId);
+  if (delErr) return false;
+  return true;
+}
+
+export async function acceptMatch(input: z.infer<typeof RowIdSchema>): Promise<{ importDeleted: boolean }> {
   const { household } = await requireSession();
   const hid = household.household_id;
   const { stagingId } = RowIdSchema.parse(input);
   const sb = getSupabaseServer();
 
-  const { ids, matchedTxnId } = await resolveSiblingIds(sb, hid, stagingId);
+  const { ids, matchedTxnId, importId } = await resolveSiblingIds(sb, hid, stagingId);
   if (!matchedTxnId) throw new Error("候補が紐付いていない行です。");
 
   const { error } = await sb
@@ -345,7 +381,9 @@ export async function acceptMatch(input: z.infer<typeof RowIdSchema>) {
     .eq("household_id", hid)
     .eq("id", matchedTxnId);
 
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
   revalidateTag(`hh:${hid}:reconcile`);
+  return { importDeleted };
 }
 
 export async function rejectMatch(input: z.infer<typeof RowIdSchema>) {
@@ -382,20 +420,22 @@ export async function rejectMatch(input: z.infer<typeof RowIdSchema>) {
   revalidateTag(`hh:${hid}:reconcile`);
 }
 
-export async function ignoreCardRow(input: z.infer<typeof RowIdSchema>) {
+export async function ignoreCardRow(input: z.infer<typeof RowIdSchema>): Promise<{ importDeleted: boolean }> {
   const { household } = await requireSession();
   const hid = household.household_id;
   const { stagingId } = RowIdSchema.parse(input);
   const sb = getSupabaseServer();
 
-  const { ids } = await resolveSiblingIds(sb, hid, stagingId);
+  const { ids, importId } = await resolveSiblingIds(sb, hid, stagingId);
   const { error } = await sb
     .from("staging_card_transactions")
     .update({ status: "ignored" })
     .eq("household_id", hid)
     .in("id", ids);
   if (error) throw new Error(error.message);
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
   revalidateTag(`hh:${hid}:reconcile`);
+  return { importDeleted };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -415,7 +455,7 @@ const CreateFromCardSchema = z.object({
 
 export async function createTransactionFromCard(
   input: z.infer<typeof CreateFromCardSchema>,
-): Promise<{ transactionId: string }> {
+): Promise<{ transactionId: string; importDeleted: boolean }> {
   const { household } = await requireSession();
   const hid = household.household_id;
   const parsed = CreateFromCardSchema.parse(input);
@@ -486,16 +526,21 @@ export async function createTransactionFromCard(
     .eq("id", staging.id);
   if (updErr) throw new Error(updErr.message);
 
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, staging.import_id as string);
+
   // Cache invalidation for the month the new txn lives in.
   const ym = monthKey(new Date(staging.date + "T00:00:00"));
   revalidateTag(`hh:${hid}:txn:${ym}`);
   revalidateTag(`hh:${hid}:transactions`);
   revalidateTag(`hh:${hid}:reconcile`);
-  return { transactionId: txnId };
+  return { transactionId: txnId, importDeleted };
 }
 
 /* ---------------------------------------------------------------------- */
-/*  archiveImport                                                          */
+/*  archiveImport — hard-deletes the import. Kept under the old name to    */
+/*  avoid breaking call sites; the cascade drops staging rows, while       */
+/*  transactions.statement_row_id is nulled via ON DELETE SET NULL so any  */
+/*  already-confirmed cash-side entries survive.                           */
 /* ---------------------------------------------------------------------- */
 
 export async function archiveImport(importId: string) {
@@ -504,7 +549,7 @@ export async function archiveImport(importId: string) {
   const sb = getSupabaseServer();
   const { error } = await sb
     .from("card_statement_imports")
-    .update({ archived_at: new Date().toISOString() })
+    .delete()
     .eq("household_id", hid)
     .eq("id", importId);
   if (error) throw new Error(error.message);
@@ -515,7 +560,9 @@ export async function archiveImport(importId: string) {
 /*  bulkAcceptHighConfidence                                               */
 /* ---------------------------------------------------------------------- */
 
-export async function bulkAcceptHighConfidence(input: { importId: string; minConfidence: number }) {
+export async function bulkAcceptHighConfidence(
+  input: { importId: string; minConfidence: number },
+): Promise<{ confirmed: number; importDeleted: boolean }> {
   const { household } = await requireSession();
   const hid = household.household_id;
   const sb = getSupabaseServer();
@@ -567,6 +614,7 @@ export async function bulkAcceptHighConfidence(input: { importId: string; minCon
     if (e2) throw new Error(e2.message);
     count += ids.length;
   }
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, input.importId);
   revalidateTag(`hh:${hid}:reconcile`);
-  return { confirmed: count };
+  return { confirmed: count, importDeleted };
 }

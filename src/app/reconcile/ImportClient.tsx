@@ -57,10 +57,7 @@ export default function ImportClient({ paymentMethods }: Props) {
 
   return (
     <section className="card">
-      <h2 className="font-semibold mb-1">明細をインポート</h2>
-      <p className="text-xs text-muted-foreground mb-3">
-        CSV でも PDF でも、ファイル形式とカード会社はシステムが自動で判別します。
-      </p>
+      <h2 className="font-semibold mb-3">明細をインポート</h2>
       <form onSubmit={onSubmit} className="space-y-3">
         <label className="block space-y-1">
           <span className="text-sm font-medium">クレジットカード</span>
