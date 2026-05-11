@@ -20,6 +20,7 @@ import {
   type StockItem,
 } from "@/lib/stockList";
 import { recordTrade, bulkRecordTrades, deleteInvestmentTransactions, updateTrade } from "../actions/investment";
+import { holdingValueJpy } from "@/lib/stockMath";
 
 type Props = {
   users: UserRow[];
@@ -41,13 +42,6 @@ async function fetchPrice(ticker: string): Promise<LivePrice | null> {
   } catch {
     return null;
   }
-}
-
-/** Compute holding value in JPY using live price if available. */
-function holdingValueJpy(h: InvestmentHoldingRow, live?: LivePrice): number {
-  const priceUnit = live?.priceUnit ?? getPriceUnit(h.ticker);
-  const price = live?.price ?? h.current_price_usd;
-  return Math.round((h.quantity * price) / priceUnit * h.exchange_rate);
 }
 
 function holdingCostJpy(h: InvestmentHoldingRow): number {
@@ -760,6 +754,8 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
       {editingTrade && (
         <EditTradeDialog
           trade={editingTrade}
+          accounts={accounts}
+          users={users}
           pending={pending}
           onClose={() => setEditingTrade(null)}
           onSave={(patched) => {
@@ -785,16 +781,21 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
 /* =================== Edit trade dialog =================== */
 function EditTradeDialog({
   trade,
+  accounts,
+  users,
   pending,
   onClose,
   onSave,
 }: {
   trade: InvestmentTransactionRow;
+  accounts: InvestmentAccountRow[];
+  users: UserRow[];
   pending: boolean;
   onClose: () => void;
   onSave: (input: {
     id: string;
     date: string;
+    account_id: string | null;
     ticker: string;
     name: string | null;
     action: "buy" | "sell";
@@ -805,6 +806,7 @@ function EditTradeDialog({
   }) => void;
 }) {
   const [date, setDate] = useState(trade.date);
+  const [accountId, setAccountId] = useState<string>(trade.account_id ?? "");
   const [action, setAction] = useState<"buy" | "sell">(trade.action);
   const [quantity, setQuantity] = useState<string>(String(trade.quantity));
   const [price, setPrice] = useState<string>(String(trade.price_usd));
@@ -828,6 +830,7 @@ function EditTradeDialog({
     onSave({
       id: trade.id,
       date,
+      account_id: accountId || null,
       ticker: trade.ticker,
       name: trade.name ?? null,
       action,
@@ -863,6 +866,25 @@ function EditTradeDialog({
             onChange={(e) => setDate(e.target.value)}
             required
           />
+        </label>
+
+        <label className="block space-y-1">
+          <span className="text-xs font-medium">証券口座</span>
+          <select
+            className="input"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+          >
+            <option value="">— 未指定 —</option>
+            {accounts.map((a) => {
+              const owner = users.find((u) => u.id === a.user_id)?.name;
+              return (
+                <option key={a.id} value={a.id}>
+                  {owner ? `${owner} / ${a.account_name}` : a.account_name}
+                </option>
+              );
+            })}
+          </select>
         </label>
 
         <div className="grid grid-cols-2 gap-2">

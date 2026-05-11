@@ -8,6 +8,7 @@ import {
   listFixedCostMasters,
 } from "@/lib/queries";
 import { requireSession } from "@/lib/auth";
+import { fetchLivePrices, type LivePrice } from "@/lib/stockPrice";
 import DashboardClient from "./DashboardClient";
 import type { InvestmentHoldingRow, InvestmentTransactionRow } from "@/lib/types";
 
@@ -43,6 +44,17 @@ export default async function DashboardPage() {
     const key = `${h.account_id}::${h.ticker}`;
     if (!latestHoldings.has(key)) latestHoldings.set(key, h);
   }
+  const holdings = Array.from(latestHoldings.values());
+
+  // SSR-prefetch live prices using the same helper the investment tab uses.
+  // This guarantees the asset-trend chart's right edge agrees with the
+  // investment tab's headline total from the first paint, instead of waiting
+  // for a client-side fetch to populate.
+  const trades = (tradesRes.data ?? []) as InvestmentTransactionRow[];
+  const tickers = Array.from(new Set([...holdings.map((h) => h.ticker), ...trades.map((t) => t.ticker)]));
+  const priceMap = await fetchLivePrices(tickers);
+  const initialPrices: Record<string, LivePrice> = {};
+  for (const [k, v] of priceMap.entries()) initialPrices[k] = v;
 
   return (
     <DashboardClient
@@ -52,8 +64,9 @@ export default async function DashboardPage() {
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
       fixedCostMasters={fixedCostMasters}
-      holdings={Array.from(latestHoldings.values())}
-      trades={(tradesRes.data ?? []) as InvestmentTransactionRow[]}
+      holdings={holdings}
+      trades={trades}
+      initialPrices={initialPrices}
     />
   );
 }

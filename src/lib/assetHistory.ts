@@ -1,5 +1,6 @@
 import type { InvestmentHoldingRow, InvestmentTransactionRow } from "@/lib/types";
 import { getPriceUnit } from "@/lib/stockList";
+import { holdingValueJpy, type LivePriceLike } from "@/lib/stockMath";
 
 export type Granularity = "monthly" | "daily";
 
@@ -52,8 +53,12 @@ export async function buildAssetHistory({
   granularity?: Granularity;
   /** Optional cutoff: only generate rows from this date forward (YYYY-MM or YYYY-MM-DD). */
   fromDate?: string;
-  /** Optional live prices per ticker (USD or JPY, before priceUnit normalization). */
-  livePrices?: Map<string, number>;
+  /**
+   * Optional live prices per ticker. Carrying the full `{ price, priceUnit }`
+   * shape (not just price) lets the "today" row mirror the investment tab's
+   * holdingValueJpy() exactly — see lib/stockMath.ts for the shared formula.
+   */
+  livePrices?: Map<string, LivePriceLike>;
 }): Promise<{ rows: AssetSeriesRow[]; tickers: TickerMeta[] }> {
   const allTickers = new Set<string>();
   for (const t of trades) allTickers.add(t.ticker);
@@ -228,15 +233,23 @@ export async function buildAssetHistory({
 
     for (const h of latestHoldings) {
       if (h.quantity <= 0) continue;
-      const priceUnit = getPriceUnit(h.ticker);
-      const price =
-        livePrices.get(h.ticker) ??
-        h.current_price_usd ??
-        resolvedPriceByTicker.get(h.ticker)?.get(todayKey);
-      if (price === undefined || price === null) continue;
-      // Mirrors investment tab's holdingValueJpy(h, live):
-      //   round((quantity × price) / priceUnit × exchange_rate)
-      const value = Math.round((h.quantity * price) / priceUnit * h.exchange_rate);
+      // Single-source-of-truth call — same helper InvestmentClient uses for
+      // its headline total. Whatever value lands here is exactly what the
+      // investment tab will display for this holding.
+      const live = livePrices.get(h.ticker);
+      // Fall back to the historical resolver only when neither live nor
+      // stored price is available — keeps the chart from collapsing to
+      // zero during a temporary API outage.
+      if (!live && (h.current_price_usd === null || h.current_price_usd === undefined)) {
+        const historical = resolvedPriceByTicker.get(h.ticker)?.get(todayKey);
+        if (historical === undefined) continue;
+        const priceUnit = getPriceUnit(h.ticker);
+        const value = Math.round((h.quantity * historical) / priceUnit * h.exchange_rate);
+        liveRow[h.ticker] = ((liveRow[h.ticker] as number) ?? 0) + value;
+        liveRow.total += value;
+        continue;
+      }
+      const value = holdingValueJpy(h, live);
       liveRow[h.ticker] = ((liveRow[h.ticker] as number) ?? 0) + value;
       liveRow.total += value;
     }

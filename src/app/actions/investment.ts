@@ -243,6 +243,7 @@ export async function bulkRecordTrades(rows: z.infer<typeof BulkTradeRow>[]) {
 const UpdateTradeSchema = z.object({
   id: z.string().uuid(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  account_id: z.string().uuid().nullable().optional(),
   ticker: z.string().min(1).max(20),
   name: z.string().max(120).nullable().optional(),
   action: z.enum(["buy", "sell"]),
@@ -252,6 +253,15 @@ const UpdateTradeSchema = z.object({
   note: z.string().max(400).nullable().optional(),
 });
 
+/**
+ * Edit an existing investment_transactions row.
+ *
+ * When account_id changes we have to recalculate the holdings snapshot for
+ * BOTH the old and the new account — buying 10 AAPL in account A and then
+ * moving the trade record to account B means A loses 10 AAPL and B gains
+ * them. recalculateHoldingsFromTrades is idempotent, so calling it on both
+ * is safe even if account_id didn't change.
+ */
 export async function updateTrade(input: z.infer<typeof UpdateTradeSchema>) {
   const { household } = await requireSession();
   const hid = household.household_id;
@@ -266,6 +276,18 @@ export async function updateTrade(input: z.infer<typeof UpdateTradeSchema>) {
     .single();
   if (fetchErr || !prev) throw new Error("取引が見つかりません。");
 
+  // Confirm the new account belongs to this household (RLS would catch a
+  // mismatch via the FK, but a clean error message is friendlier).
+  if (p.account_id) {
+    const { data: acct } = await sb
+      .from("investment_accounts")
+      .select("id")
+      .eq("household_id", hid)
+      .eq("id", p.account_id)
+      .maybeSingle();
+    if (!acct) throw new Error("指定された証券口座がこの世帯に存在しません。");
+  }
+
   const priceUnit = getPriceUnit(p.ticker);
   const amountJpy = Math.round((p.quantity * p.price_usd) / priceUnit * p.exchange_rate);
 
@@ -273,6 +295,7 @@ export async function updateTrade(input: z.infer<typeof UpdateTradeSchema>) {
     .from("investment_transactions")
     .update({
       date: p.date,
+      account_id: p.account_id ?? null,
       ticker: p.ticker,
       name: p.name ?? null,
       action: p.action,
@@ -301,8 +324,11 @@ export async function updateTrade(input: z.infer<typeof UpdateTradeSchema>) {
     if (linkedErr) throw new Error(`連動取引の更新に失敗: ${linkedErr.message}`);
   }
 
-  if (prev.account_id) {
-    await recalculateHoldingsFromTrades(prev.account_id);
+  const accountsToRebuild = new Set<string>();
+  if (prev.account_id) accountsToRebuild.add(prev.account_id as string);
+  if (p.account_id) accountsToRebuild.add(p.account_id);
+  for (const accountId of accountsToRebuild) {
+    await recalculateHoldingsFromTrades(accountId);
   }
 
   revalidateTag(`hh:${hid}:transactions`);
