@@ -43,3 +43,17 @@ export async function extractPdfText(bytes: Uint8Array): Promise<string> {
 export function looksLikePdf(bytes: Uint8Array): boolean {
   return bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
 }
+
+/**
+ * Stable fingerprint for a PDF's extracted text. Used to look up
+ * card_pdf_format_memory so that the parser knows which strategy worked
+ * last time. Uses the first chunk of normalized text — the issuer's
+ * branding, the cardholder name, and the card number live there, all of
+ * which stay constant across monthly statements of the same card.
+ */
+import { createHash } from "crypto";
+
+export function computePdfFingerprint(text: string): string {
+  const head = text.slice(0, 600).replace(/\s+/g, " ").trim().slice(0, 400);
+  return createHash("sha256").update(head).digest("hex").slice(0, 16);
+}

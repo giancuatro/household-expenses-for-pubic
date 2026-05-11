@@ -35,7 +35,16 @@ export default function ImportClient({ paymentMethods }: Props) {
         filename: file.name,
         fileBase64,
       });
-      router.push(`/reconcile/${result.importId}`);
+      // Flag whether the system found this PDF's fingerprint in the
+      // format-memory store (formatRemembered=true) or had to trial
+      // every strategy and learn (formatRemembered=false). The reconcile
+      // detail page reads this from the query string and shows a brief
+      // banner so the user can see the learning happen.
+      const fmtHint =
+        result.pdfStrategy && !result.duplicate
+          ? `?fmt=${result.formatRemembered ? "remembered" : "learned"}`
+          : "";
+      router.push(`/reconcile/${result.importId}${fmtHint}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setBusy(false);

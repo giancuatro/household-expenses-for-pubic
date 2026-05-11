@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   acceptMatch,
   archiveImport,
@@ -42,8 +42,14 @@ export default function ReconcileClient({
   transactions,
 }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [pending, startTransition] = useTransition();
   const [err, setErr] = useState<string | null>(null);
+
+  // Format-learning banner: ImportClient appends ?fmt=learned for first-
+  // time PDF imports and ?fmt=remembered when it re-used a cached
+  // strategy. Surface this so the user can see the learning happen.
+  const fmtBanner = searchParams?.get("fmt") ?? null;
 
   const pmName = paymentMethods.find((p) => p.id === importRow.payment_method_id)?.name ?? "(支払方法不明)";
 
@@ -117,6 +123,16 @@ export default function ReconcileClient({
           {importRow.period_start ?? "?"} 〜 {importRow.period_end ?? "?"} ・ 形式: {formatFormat(importRow.parser)}
           {importRow.source_filename && ` ・ ${importRow.source_filename}`}
         </p>
+        {fmtBanner === "learned" && (
+          <p className="text-xs rounded-md border border-primary/30 bg-primary/10 text-primary px-2 py-1 inline-block">
+            🎓 このカードのフォーマットを学習しました。次回からは即座に取り込めます。
+          </p>
+        )}
+        {fmtBanner === "remembered" && (
+          <p className="text-xs rounded-md border border-success/30 bg-success/10 text-success px-2 py-1 inline-block">
+            ✓ 学習済みフォーマットで取り込みました。
+          </p>
+        )}
         <div className="flex flex-wrap gap-3 pt-2 text-xs">
           <Pill label={`一致 ${stats.confirmed}`} tone="success" />
           <Pill label={`候補 ${stats.suggested}`} tone="warn" />

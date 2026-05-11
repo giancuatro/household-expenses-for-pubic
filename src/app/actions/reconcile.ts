@@ -5,7 +5,16 @@ import { z } from "zod";
 import { createHash, randomUUID } from "crypto";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
-import { decodeCsvBytes, detectParser, extractPdfText } from "@/lib/csvImport";
+import {
+  computePdfFingerprint,
+  decodeCsvBytes,
+  detectParser,
+  extractPdfText,
+  looksLikePdf,
+  pickBestPdfStrategy,
+  runPdfStrategy,
+  type PdfStrategyId,
+} from "@/lib/csvImport";
 import { findGroupMatches, reconcile, statusFromConfidence, type CandidateTxn, type CardRow } from "@/lib/reconcile/matcher";
 import { monthKey } from "@/lib/format";
 import type { TxnKind } from "@/lib/types";
@@ -35,6 +44,10 @@ export interface ImportResult {
   duplicate: boolean;       // true when raw_hash already exists for this household
   periodStart: string | null;
   periodEnd: string | null;
+  /** True when the PDF format matched a previously-remembered fingerprint. */
+  formatRemembered?: boolean;
+  /** The PDF strategy used ('compact', 'split-col', ...) — null for CSV imports. */
+  pdfStrategy?: string | null;
 }
 
 /**
@@ -84,24 +97,93 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     };
   }
 
-  // Auto-detect: PDF magic bytes pick the PDF parser; everything else flows
-  // through the auto-mapping CSV parser. Both parsers infer the issuer-specific
-  // shape from the file contents (header keywords for CSV, date+amount line
-  // patterns for PDF), so the user never has to pick a "parser" — they just
-  // upload whatever their card portal gave them.
+  // Auto-detect file format from magic bytes. PDFs additionally have an
+  // internal strategy (compact / split-col / ...) — for those we look the
+  // fingerprint up in card_pdf_format_memory and skip the strategy trial
+  // when we've successfully parsed this card's PDF before.
   const bytes = new Uint8Array(buf);
-  const parser = detectParser(bytes);
-  const body =
-    parser.inputFormat === "pdf" ? await extractPdfText(bytes) : decodeCsvBytes(bytes);
-  const result = parser.parse(body);
+  const isPdf = looksLikePdf(bytes);
+  let result;
+  let pdfStrategy: PdfStrategyId | null = null;
+  let formatRemembered = false;
+
+  if (isPdf) {
+    const body = await extractPdfText(bytes);
+    const fingerprint = computePdfFingerprint(body);
+    const { data: memory } = await sb
+      .from("card_pdf_format_memory")
+      .select("parser_strategy, hit_count")
+      .eq("household_id", hid)
+      .eq("fingerprint", fingerprint)
+      .maybeSingle();
+
+    if (memory?.parser_strategy) {
+      // Known format → run only the remembered strategy.
+      const stored = memory.parser_strategy as PdfStrategyId;
+      try {
+        result = runPdfStrategy(body, stored);
+        if (result.rows.length === 0) {
+          // The remembered strategy regressed (rare — issuer changed PDF
+          // layout?). Fall back to re-detection so the user still gets a
+          // useful import.
+          throw new Error("remembered strategy produced no rows");
+        }
+        pdfStrategy = stored;
+        formatRemembered = true;
+        await sb
+          .from("card_pdf_format_memory")
+          .update({
+            hit_count: (memory.hit_count as number) + 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("household_id", hid)
+          .eq("fingerprint", fingerprint);
+      } catch {
+        const best = pickBestPdfStrategy(body);
+        result = best.result;
+        pdfStrategy = best.strategy;
+        await sb
+          .from("card_pdf_format_memory")
+          .update({
+            parser_strategy: best.strategy,
+            hit_count: 1,
+            last_used_at: new Date().toISOString(),
+            first_seen_at: new Date().toISOString(),
+          })
+          .eq("household_id", hid)
+          .eq("fingerprint", fingerprint);
+      }
+    } else {
+      // First time seeing this card — trial every strategy and persist the
+      // winner so the next import is a direct hit.
+      const best = pickBestPdfStrategy(body);
+      result = best.result;
+      pdfStrategy = best.strategy;
+      await sb.from("card_pdf_format_memory").insert({
+        household_id: hid,
+        fingerprint,
+        parser_strategy: best.strategy,
+      });
+    }
+  } else {
+    const parser = detectParser(bytes);
+    const body = decodeCsvBytes(bytes);
+    result = parser.parse(body);
+  }
 
   // Persist the import header.
   const importId = randomUUID();
+  // Parser column on card_statement_imports records which extraction
+  // pipeline produced the rows: for PDFs we record the strategy id
+  // ("compact" / "split-col"); for CSVs we keep the existing parser id.
+  const importParserLabel = isPdf
+    ? `pdf-${pdfStrategy ?? "auto"}`
+    : detectParser(bytes).id;
   const { error: hdrErr } = await sb.from("card_statement_imports").insert({
     id: importId,
     household_id: hid,
     payment_method_id: parsed.payment_method_id,
-    parser: parser.id,
+    parser: importParserLabel,
     source_filename: parsed.filename ?? null,
     source_size_bytes: buf.length,
     raw_hash: rawHash,
@@ -142,6 +224,8 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     duplicate: false,
     periodStart: result.periodStart,
     periodEnd: result.periodEnd,
+    formatRemembered,
+    pdfStrategy,
   };
 }
 
