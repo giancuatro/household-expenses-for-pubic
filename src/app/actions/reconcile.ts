@@ -5,7 +5,7 @@ import { z } from "zod";
 import { createHash, randomUUID } from "crypto";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
-import { decodeCsvBytes, extractPdfText, getParser, looksLikePdf } from "@/lib/csvImport";
+import { decodeCsvBytes, detectParser, extractPdfText } from "@/lib/csvImport";
 import { findGroupMatches, reconcile, statusFromConfidence, type CandidateTxn, type CardRow } from "@/lib/reconcile/matcher";
 import { monthKey } from "@/lib/format";
 import type { TxnKind } from "@/lib/types";
@@ -15,8 +15,6 @@ import type { TxnKind } from "@/lib/types";
 /* ---------------------------------------------------------------------- */
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;        // 8 MB (PDF statements are larger than CSVs)
-const ALLOWED_PARSERS = ["amex", "amex-pdf", "generic"] as const;
-type ParserId = (typeof ALLOWED_PARSERS)[number];
 
 /* ---------------------------------------------------------------------- */
 /*  importCardStatement                                                    */
@@ -24,18 +22,8 @@ type ParserId = (typeof ALLOWED_PARSERS)[number];
 
 const ImportSchema = z.object({
   payment_method_id: z.string().uuid(),
-  parser: z.enum(ALLOWED_PARSERS),
   filename: z.string().max(255).optional(),
   fileBase64: z.string().max(MAX_FILE_BYTES * 2),  // base64 expands ~33%
-  // Generic parser column mapping. Ignored for branded parsers.
-  columns: z
-    .object({
-      date: z.number().int().min(0).max(50),
-      amount: z.number().int().min(0).max(50),
-      merchant: z.number().int().min(0).max(50),
-    })
-    .optional(),
-  skipHeaderRows: z.number().int().min(0).max(10).optional(),
 });
 
 export type ImportInput = z.infer<typeof ImportSchema>;
@@ -73,8 +61,8 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
   if (pmErr || !pm) throw new Error("指定された支払い方法が見つかりません。");
 
   const buf = Buffer.from(parsed.fileBase64, "base64");
-  if (buf.length === 0) throw new Error("CSV ファイルが空です。");
-  if (buf.length > MAX_FILE_BYTES) throw new Error("ファイルサイズが上限（5MB）を超えています。");
+  if (buf.length === 0) throw new Error("ファイルが空です。");
+  if (buf.length > MAX_FILE_BYTES) throw new Error("ファイルサイズが上限（8MB）を超えています。");
 
   const rawHash = createHash("sha256").update(buf).digest("hex");
 
@@ -96,28 +84,16 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     };
   }
 
-  const parser = getParser(parsed.parser);
-  if (!parser) throw new Error(`不明なパーサ: ${parsed.parser}`);
-
-  // For PDF parsers we run pdf.js text extraction first; CSV parsers get the
-  // Shift_JIS / UTF-8-decoded body straight from bytes. We also cross-check
-  // the parser's declared input format against the file's magic bytes so
-  // selecting "AMEX CSV" on a PDF (or vice versa) fails fast with a clear
-  // message instead of producing garbage rows.
+  // Auto-detect: PDF magic bytes pick the PDF parser; everything else flows
+  // through the auto-mapping CSV parser. Both parsers infer the issuer-specific
+  // shape from the file contents (header keywords for CSV, date+amount line
+  // patterns for PDF), so the user never has to pick a "parser" — they just
+  // upload whatever their card portal gave them.
   const bytes = new Uint8Array(buf);
-  const isPdf = looksLikePdf(bytes);
-  if (parser.inputFormat === "pdf" && !isPdf) {
-    throw new Error("選択したパーサは PDF 用ですが、アップロードされたファイルは PDF ではありません。");
-  }
-  if (parser.inputFormat === "csv" && isPdf) {
-    throw new Error("選択したパーサは CSV 用ですが、PDF がアップロードされました。PDF 用パーサを選び直してください。");
-  }
+  const parser = detectParser(bytes);
   const body =
     parser.inputFormat === "pdf" ? await extractPdfText(bytes) : decodeCsvBytes(bytes);
-  const result = parser.parse(body, {
-    columns: parsed.columns,
-    skipHeaderRows: parsed.skipHeaderRows,
-  });
+  const result = parser.parse(body);
 
   // Persist the import header.
   const importId = randomUUID();
@@ -125,7 +101,7 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     id: importId,
     household_id: hid,
     payment_method_id: parsed.payment_method_id,
-    parser: parsed.parser,
+    parser: parser.id,
     source_filename: parsed.filename ?? null,
     source_size_bytes: buf.length,
     raw_hash: rawHash,

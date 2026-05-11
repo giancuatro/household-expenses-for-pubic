@@ -103,7 +103,7 @@ export default function ReconcileClient({
       <header className="card space-y-1">
         <h1 className="text-xl font-bold tracking-tight">{pmName}</h1>
         <p className="text-xs text-muted-foreground">
-          {importRow.period_start ?? "?"} 〜 {importRow.period_end ?? "?"} ・ パーサ: {importRow.parser}
+          {importRow.period_start ?? "?"} 〜 {importRow.period_end ?? "?"} ・ 形式: {formatFormat(importRow.parser)}
           {importRow.source_filename && ` ・ ${importRow.source_filename}`}
         </p>
         <div className="flex flex-wrap gap-3 pt-2 text-xs">
@@ -221,6 +221,15 @@ export default function ReconcileClient({
       )}
     </div>
   );
+}
+
+/** Render the internal parser id (csv-auto / pdf-auto) as a friendly format label. */
+function formatFormat(id: string): string {
+  if (id === "pdf-auto") return "PDF";
+  if (id === "csv-auto") return "CSV";
+  if (id === "amex" || id === "generic") return "CSV";
+  if (id === "amex-pdf") return "PDF";
+  return id;
 }
 
 /* ---------------------------------------------------------------------- */

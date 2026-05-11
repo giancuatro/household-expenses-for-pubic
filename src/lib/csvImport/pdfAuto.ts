@@ -2,37 +2,32 @@ import type { ParseResult, ParsedRow, ParserDefinition } from "./types";
 import { parseJpDate, parseYen } from "./normalize";
 
 /**
- * AMEX (Japan) PDF statement parser.
+ * Auto-detecting PDF statement parser.
  *
- * AMEX online portal lets you download the monthly statement as a PDF. The
- * body of each charge row reads roughly:
- *
- *   2026年04月03日   Starbucks Shibuya     ¥620
- *   2026年04月05日   Amazon Japan       ¥3,480
- *
- * After unpdf merges page text, items are separated by whitespace and
- * newlines. We walk lines, find any with a leading date, split off the
- * trailing yen amount, and treat the middle as the merchant.
+ * Almost every Japanese card issuer (AMEX, 楽天カード, JCB, セゾン, 三井住友,
+ * イオン, dカード …) prints transactions in the same shape: a date prefix
+ * at the start of a line followed by a merchant string, with the yen
+ * amount trailing on the same line or the next. Rather than ship a
+ * brand-specific parser per issuer, we walk every line and pull rows that
+ * match this pattern.
  *
  * Robust to:
  *   - 和暦 / Western date formats (parseJpDate handles both)
  *   - ¥ / 円 / commas / full-width digits
- *   - Trailing notes like "（一括）", "（リボ）" that show up after the amount
- *   - Multi-line wrap where the merchant name overflows: we look back at the
- *     previous date-bearing line if the current line is amount-only or
- *     merchant-only.
+ *   - Multi-line wrap where the amount is on the next line
+ *   - Section headers, "ご請求金額" totals, exchange-rate annotations —
+ *     these lines either lack a leading date or lack a trailing amount,
+ *     so they fall out of the loop naturally.
  *
- * Skips:
- *   - Section headers ("ご利用明細", "ご請求金額")
- *   - Subtotal / fee / "今回ご請求金額" lines (no per-charge date)
- *   - Translation / exchange-rate annotations on foreign charges
+ * Out of scope:
+ *   - Scanned / image PDFs — text extraction returns empty and we throw a
+ *     clear error pointing the user at the CSV export instead.
+ *   - Encrypted PDFs — same outcome.
  */
 
 const DATE_PREFIX_RE =
   /^(?:\d{2,4}[年/\-.]\s*\d{1,2}[月/\-.]\s*\d{1,2}日?)\b/;
 
-// Trailing amount, possibly preceded by ¥, with optional thousands separators
-// and surrounded by whitespace. The greedy capture handles "¥1,234".
 const AMOUNT_TRAIL_RE = /([¥￥]?\s*[\d,０-９]+\s*円?)\s*$/;
 
 function findFirstDateMatch(line: string): { match: string; rest: string } | null {
@@ -41,7 +36,7 @@ function findFirstDateMatch(line: string): { match: string; rest: string } | nul
   return { match: m[0], rest: line.slice(m[0].length).trim() };
 }
 
-function parseAmexPdf(body: string): ParseResult {
+function parsePdfAuto(body: string): ParseResult {
   const lines = body
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -62,9 +57,6 @@ function parseAmexPdf(body: string): ParseResult {
       continue;
     }
 
-    // Strategy:
-    //   - If the rest of the line ends with an amount, we have date + merchant + amount in one line.
-    //   - Otherwise the amount may be on the next line; peek ahead.
     let merchantRaw = dateHit.rest;
     let amountRaw: string | null = null;
 
@@ -82,7 +74,7 @@ function parseAmexPdf(body: string): ParseResult {
     }
 
     if (!amountRaw) {
-      skipped.push({ line: i + 1, raw: line, reason: "金額が見つからない" });
+      // No amount → not a transaction line (probably a date-looking heading).
       continue;
     }
     const amount = parseYen(amountRaw);
@@ -90,11 +82,7 @@ function parseAmexPdf(body: string): ParseResult {
       skipped.push({ line: i + 1, raw: line, reason: `金額パース失敗: ${amountRaw}` });
       continue;
     }
-    if (amount === 0) {
-      skipped.push({ line: i + 1, raw: line, reason: "金額0" });
-      continue;
-    }
-
+    if (amount === 0) continue;
     if (!merchantRaw) merchantRaw = "(不明)";
 
     if (!minDate || date < minDate) minDate = date;
@@ -109,16 +97,17 @@ function parseAmexPdf(body: string): ParseResult {
 
   if (rows.length === 0) {
     throw new Error(
-      "AMEX PDF: 取り込める明細行がありません。スキャン版 PDF や暗号化 PDF はサポート外です（CSV をご利用ください）。",
+      "PDF から取り込める明細行を抽出できませんでした。スキャン版・暗号化 PDF はサポート外です。" +
+        "可能であれば CSV 形式の明細をアップロードしてください。",
     );
   }
 
   return { rows, skipped, periodStart: minDate, periodEnd: maxDate };
 }
 
-export const amexPdfParser: ParserDefinition = {
-  id: "amex-pdf",
-  label: "American Express（PDF 明細）",
-  parse: parseAmexPdf,
+export const pdfAutoParser: ParserDefinition = {
+  id: "pdf-auto",
+  label: "PDF（自動判別）",
+  parse: parsePdfAuto,
   inputFormat: "pdf",
 };

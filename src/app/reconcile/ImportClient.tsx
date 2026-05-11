@@ -12,15 +12,10 @@ interface Props {
   users: UserRow[];
 }
 
-type ParserId = "amex" | "amex-pdf" | "generic";
-
 export default function ImportClient({ paymentMethods }: Props) {
   const router = useRouter();
   const [pmId, setPmId] = useState(paymentMethods[0]?.id ?? "");
-  const [parser, setParser] = useState<ParserId>("amex");
   const [file, setFile] = useState<File | null>(null);
-  const [genericCols, setGenericCols] = useState({ date: 0, amount: 1, merchant: 2 });
-  const [skipHeader, setSkipHeader] = useState(1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -37,12 +32,8 @@ export default function ImportClient({ paymentMethods }: Props) {
       const fileBase64 = arrayBufferToBase64(buf);
       const result = await importCardStatement({
         payment_method_id: pmId,
-        parser,
         filename: file.name,
         fileBase64,
-        ...(parser === "generic"
-          ? { columns: genericCols, skipHeaderRows: skipHeader }
-          : {}),
       });
       router.push(`/reconcile/${result.importId}`);
     } catch (e) {
@@ -66,105 +57,37 @@ export default function ImportClient({ paymentMethods }: Props) {
 
   return (
     <section className="card">
-      <h2 className="font-semibold mb-3">明細をインポート</h2>
+      <h2 className="font-semibold mb-1">明細をインポート</h2>
+      <p className="text-xs text-muted-foreground mb-3">
+        CSV でも PDF でも、ファイル形式とカード会社はシステムが自動で判別します。
+      </p>
       <form onSubmit={onSubmit} className="space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="block space-y-1">
-            <span className="text-sm font-medium">支払方法</span>
-            <select
-              className="input"
-              value={pmId}
-              onChange={(e) => setPmId(e.target.value)}
-              required
-            >
-              {paymentMethods.map((pm) => (
-                <option key={pm.id} value={pm.id}>{pm.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block space-y-1">
-            <span className="text-sm font-medium">パーサ</span>
-            <select
-              className="input"
-              value={parser}
-              onChange={(e) => setParser(e.target.value as ParserId)}
-            >
-              <option value="amex">American Express（CSV 明細）</option>
-              <option value="amex-pdf">American Express（PDF 明細）</option>
-              <option value="generic">汎用（列を指定 / CSV）</option>
-            </select>
-          </label>
-        </div>
-
-        {parser === "generic" && (
-          <div className="rounded-lg border border-border p-3 space-y-2">
-            <p className="text-xs text-muted-foreground">
-              CSV の何列目に何が入っているか、0始まりで指定してください。先頭ヘッダ行は除外できます。
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <label className="text-xs space-y-1">
-                <span>日付列</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={50}
-                  className="input"
-                  value={genericCols.date}
-                  onChange={(e) => setGenericCols((c) => ({ ...c, date: Number(e.target.value) }))}
-                />
-              </label>
-              <label className="text-xs space-y-1">
-                <span>金額列</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={50}
-                  className="input"
-                  value={genericCols.amount}
-                  onChange={(e) => setGenericCols((c) => ({ ...c, amount: Number(e.target.value) }))}
-                />
-              </label>
-              <label className="text-xs space-y-1">
-                <span>店名列</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={50}
-                  className="input"
-                  value={genericCols.merchant}
-                  onChange={(e) => setGenericCols((c) => ({ ...c, merchant: Number(e.target.value) }))}
-                />
-              </label>
-              <label className="text-xs space-y-1">
-                <span>ヘッダ行数</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={10}
-                  className="input"
-                  value={skipHeader}
-                  onChange={(e) => setSkipHeader(Number(e.target.value))}
-                />
-              </label>
-            </div>
-          </div>
-        )}
+        <label className="block space-y-1">
+          <span className="text-sm font-medium">クレジットカード</span>
+          <select
+            className="input"
+            value={pmId}
+            onChange={(e) => setPmId(e.target.value)}
+            required
+          >
+            {paymentMethods.map((pm) => (
+              <option key={pm.id} value={pm.id}>{pm.name}</option>
+            ))}
+          </select>
+        </label>
 
         <label className="block space-y-1">
-          <span className="text-sm font-medium">
-            {parser === "amex-pdf" ? "PDF ファイル" : "CSV ファイル"}
-          </span>
+          <span className="text-sm font-medium">明細ファイル</span>
           <input
             type="file"
-            accept={
-              parser === "amex-pdf"
-                ? ".pdf,application/pdf"
-                : ".csv,text/csv,application/vnd.ms-excel"
-            }
+            accept=".csv,.pdf,text/csv,application/pdf,application/vnd.ms-excel"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             required
             className="block w-full text-sm"
           />
+          <span className="text-[11px] text-muted-foreground">
+            対応：CSV / PDF。AMEX、楽天カード、JCB、セゾン、三井住友、その他主要カードに対応。
+          </span>
         </label>
 
         {err && (

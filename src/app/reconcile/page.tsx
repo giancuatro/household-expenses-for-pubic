@@ -60,7 +60,7 @@ export default async function ReconcileIndexPage() {
                 <div className="min-w-0 flex-1">
                   <div className="font-medium truncate">
                     {pmById.get(imp.payment_method_id) ?? "(支払方法未指定)"}{" "}
-                    <span className="text-xs text-muted-foreground">/ {imp.parser}</span>
+                    <span className="text-xs text-muted-foreground">/ {formatFormatLabel(imp.parser)}</span>
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {imp.period_start ?? "?"} 〜 {imp.period_end ?? "?"} ・ {imp.row_count} 件 ・{" "}
@@ -78,4 +78,14 @@ export default async function ReconcileIndexPage() {
       </section>
     </div>
   );
+}
+
+/** Render the internal parser id (csv-auto / pdf-auto) as a friendly format label. */
+function formatFormatLabel(id: string): string {
+  if (id === "pdf-auto") return "PDF";
+  if (id === "csv-auto") return "CSV";
+  // Legacy ids from earlier imports.
+  if (id === "amex" || id === "generic") return "CSV";
+  if (id === "amex-pdf") return "PDF";
+  return id;
 }
