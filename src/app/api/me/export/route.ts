@@ -101,13 +101,23 @@ export async function GET() {
   });
 }
 
-/** Minimal RFC 4180 CSV writer. Handles commas, quotes, newlines, and null. */
+/**
+ * Minimal RFC 4180 CSV writer. Handles commas, quotes, newlines, and null.
+ *
+ * Also defends against CSV formula injection: a cell starting with =, +, -,
+ * @, tab, or CR is prefixed with a single quote so Excel/Numbers/Sheets do
+ * not interpret it as a formula. This matters because note/subcategory
+ * fields are user-supplied and the CSV is opened by humans on their own
+ * machines (OWASP CSV Injection).
+ */
 function toCsv(rows: Record<string, unknown>[]): string {
   if (rows.length === 0) return "";
   const headers = Object.keys(rows[0]);
+  const FORMULA_LEAD = /^[=+\-@\t\r]/;
   const escape = (v: unknown) => {
     if (v === null || v === undefined) return "";
-    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    let s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    if (FORMULA_LEAD.test(s)) s = "'" + s;
     if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };

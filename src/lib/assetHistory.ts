@@ -1,5 +1,6 @@
 import type { InvestmentHoldingRow, InvestmentTransactionRow } from "@/lib/types";
 import { getPriceUnit } from "@/lib/stockList";
+import { holdingValueJpy, type LivePriceLike } from "@/lib/stockMath";
 
 export type Granularity = "monthly" | "daily";
 
@@ -52,8 +53,12 @@ export async function buildAssetHistory({
   granularity?: Granularity;
   /** Optional cutoff: only generate rows from this date forward (YYYY-MM or YYYY-MM-DD). */
   fromDate?: string;
-  /** Optional live prices per ticker (USD or JPY, before priceUnit normalization). */
-  livePrices?: Map<string, number>;
+  /**
+   * Optional live prices per ticker. Carrying the full `{ price, priceUnit }`
+   * shape (not just price) lets the "today" row mirror the investment tab's
+   * holdingValueJpy() exactly — see lib/stockMath.ts for the shared formula.
+   */
+  livePrices?: Map<string, LivePriceLike>;
 }): Promise<{ rows: AssetSeriesRow[]; tickers: TickerMeta[] }> {
   const allTickers = new Set<string>();
   for (const t of trades) allTickers.add(t.ticker);
@@ -187,11 +192,22 @@ export async function buildAssetHistory({
   }
 
   // If live prices are available, append (or overwrite) a final row keyed
-  // to "today" (daily) or the current month (monthly). Without this, the
-  // chart's most recent point uses yesterday's close (daily) or last-month
-  // close (monthly), which doesn't match the live total on the investment
-  // tab. This row makes the right edge of the chart agree with the live
-  // total exactly.
+  // to "today" (daily) or the current month (monthly).
+  //
+  // CRITICAL: this row must agree EXACTLY with the investment tab's
+  // "current total" (InvestmentClient → holdingValueJpy summed). The earlier
+  // approach replayed trades to derive today's quantity, which silently
+  // diverged from the investment tab whenever:
+  //   - a holding row was manually edited / recalculated and its quantity
+  //     no longer matched a pure replay of the buy/sell history,
+  //   - the same ticker existed in multiple accounts with different
+  //     exchange_rate values (replay-based code picked ONE fx per ticker
+  //     instead of summing per-account at each account's own fx).
+  //
+  // The fix: use the holdings snapshot directly — the same data the
+  // investment tab uses — deduped to the latest row per (account, ticker).
+  // The replay logic stays for historical rows; only the right-most "live"
+  // point switches to holdings-derived.
   if (livePrices && livePrices.size > 0) {
     const todayKey = (() => {
       if (granularity === "monthly") {
@@ -199,35 +215,45 @@ export async function buildAssetHistory({
       }
       return isoOf(today);
     })();
-    const replayUpTo = isoOf(today);
+
+    // Dedupe holdings → latest per (account_id, ticker). holdings are
+    // expected pre-sorted by fetched_at desc by the queries layer; we
+    // re-sort defensively so this function never depends on caller order.
+    const sortedHoldings = [...holdings].sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
+    const seenAcctTicker = new Set<string>();
+    const latestHoldings = sortedHoldings.filter((h) => {
+      const k = `${h.account_id}::${h.ticker}`;
+      if (seenAcctTicker.has(k)) return false;
+      seenAcctTicker.add(k);
+      return true;
+    });
+
     const liveRow: AssetSeriesRow = { date: todayKey, total: 0 };
-    for (const ticker of tickers) {
-      const earliest = earliestByTicker.get(ticker);
-      if (!earliest || todayKey < earliest.slice(0, todayKey.length)) {
-        liveRow[ticker] = 0;
+    for (const ticker of tickers) liveRow[ticker] = 0;
+
+    for (const h of latestHoldings) {
+      if (h.quantity <= 0) continue;
+      // Single-source-of-truth call — same helper InvestmentClient uses for
+      // its headline total. Whatever value lands here is exactly what the
+      // investment tab will display for this holding.
+      const live = livePrices.get(h.ticker);
+      // Fall back to the historical resolver only when neither live nor
+      // stored price is available — keeps the chart from collapsing to
+      // zero during a temporary API outage.
+      if (!live && (h.current_price_usd === null || h.current_price_usd === undefined)) {
+        const historical = resolvedPriceByTicker.get(h.ticker)?.get(todayKey);
+        if (historical === undefined) continue;
+        const priceUnit = getPriceUnit(h.ticker);
+        const value = Math.round((h.quantity * historical) / priceUnit * h.exchange_rate);
+        liveRow[h.ticker] = ((liveRow[h.ticker] as number) ?? 0) + value;
+        liveRow.total += value;
         continue;
       }
-      const quantity = quantityAt(trades, ticker, replayUpTo);
-      if (quantity <= 0) {
-        liveRow[ticker] = 0;
-        continue;
-      }
-      const priceUnit = getPriceUnit(ticker);
-      const live = livePrices.get(ticker);
-      const price =
-        live ??
-        resolvedPriceByTicker.get(ticker)?.get(todayKey) ??
-        fallbackPriceByTicker.get(ticker);
-      if (price === undefined) {
-        liveRow[ticker] = 0;
-        continue;
-      }
-      const fx = fxByTicker.get(ticker) ?? 1;
-      const value = Math.round((quantity * price * fx) / priceUnit);
-      liveRow[ticker] = value;
+      const value = holdingValueJpy(h, live);
+      liveRow[h.ticker] = ((liveRow[h.ticker] as number) ?? 0) + value;
       liveRow.total += value;
     }
-    // Replace existing same-key row if present, otherwise append.
+
     const existingIdx = rows.findIndex((r) => r.date === todayKey);
     if (existingIdx >= 0) rows[existingIdx] = liveRow;
     else rows.push(liveRow);

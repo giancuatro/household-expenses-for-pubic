@@ -9,6 +9,59 @@ import { firstOfMonth } from "@/lib/format";
 import { regenerateFixedCostForMaster } from "@/lib/fixedCosts";
 import { randomBytes } from "crypto";
 
+/* -------------------- Household-wide entry defaults -------------------- */
+const HouseholdDefaultsSchema = z.object({
+  default_user_id: z.string().uuid().nullable().optional(),
+  default_payment_method_id: z.string().uuid().nullable().optional(),
+});
+
+/**
+ * Persist the pre-selected payer / credit card for the Home tab's entry form.
+ * Both fields are nullable — clearing either falls the home form back to
+ * "first user" / "no payment method".
+ *
+ * Cross-household integrity: only members of the active household can set
+ * these (requireSession ensures that), and only ids that belong to the same
+ * household are accepted — RLS would reject mismatches but we surface a
+ * friendlier error.
+ */
+export async function updateHouseholdDefaults(input: z.infer<typeof HouseholdDefaultsSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = HouseholdDefaultsSchema.parse(input);
+  const sb = getSupabaseServer();
+
+  if (p.default_user_id) {
+    const { data } = await sb
+      .from("users")
+      .select("id")
+      .eq("household_id", hid)
+      .eq("id", p.default_user_id)
+      .maybeSingle();
+    if (!data) throw new Error("指定された支払者がこの世帯に存在しません。");
+  }
+  if (p.default_payment_method_id) {
+    const { data } = await sb
+      .from("payment_methods")
+      .select("id")
+      .eq("household_id", hid)
+      .eq("id", p.default_payment_method_id)
+      .maybeSingle();
+    if (!data) throw new Error("指定された支払方法がこの世帯に存在しません。");
+  }
+
+  const { error } = await sb
+    .from("households")
+    .update({
+      default_user_id: p.default_user_id ?? null,
+      default_payment_method_id: p.default_payment_method_id ?? null,
+    })
+    .eq("id", hid);
+  if (error) throw new Error(error.message);
+
+  revalidateTag(`hh:${hid}`);
+}
+
 /* -------------------- Users (payer labels) -------------------- */
 export async function createUser(name: string) {
   const { household } = await requireSession();

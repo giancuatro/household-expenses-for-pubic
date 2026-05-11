@@ -59,6 +59,9 @@ type Props = {
   /** True when this household has not yet completed onboarding. */
   showOnboarding: boolean;
   currentMonth: string;
+  /** Optional Settings → 世帯 defaults that pre-select the entry form. */
+  defaultUserId: string | null;
+  defaultPaymentMethodId: string | null;
 };
 
 /** Next YYYY-MM-DD on or after `from` whose day-of-month equals `day`. */
@@ -119,6 +122,8 @@ export default function HomeClient({
   kindColors,
   showOnboarding,
   currentMonth,
+  defaultUserId,
+  defaultPaymentMethodId: householdDefaultPmId,
 }: Props) {
   const router = useRouter();
 
@@ -129,7 +134,26 @@ export default function HomeClient({
   // applyFixedCostsForMonth in layout.tsx, so we don't lose anything by
   // skipping this client-side trigger.
 
-  const [userId, setUserId] = useState<string | null>(users[0]?.id ?? null);
+  // Resolve the initial payer/payment method from Settings → 世帯 defaults.
+  // Fallbacks (first user / no payment method) keep the form usable for
+  // brand-new households that haven't configured defaults yet, and stay
+  // safe if the configured ids point at archived/deleted rows.
+  const initialUserId = useMemo(() => {
+    if (defaultUserId && users.some((u) => u.id === defaultUserId)) return defaultUserId;
+    return users[0]?.id ?? null;
+  }, [defaultUserId, users]);
+
+  const defaultPaymentMethodId = useMemo(() => {
+    if (
+      householdDefaultPmId &&
+      paymentMethods.some((m) => m.id === householdDefaultPmId && !m.archived)
+    ) {
+      return householdDefaultPmId;
+    }
+    return null;
+  }, [householdDefaultPmId, paymentMethods]);
+
+  const [userId, setUserId] = useState<string | null>(initialUserId);
   const [amount, setAmount] = useState<string>("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [txnKind, setTxnKind] = useState<TxnKind>("variable");
@@ -140,13 +164,6 @@ export default function HomeClient({
   const [splitMode, setSplitMode] = useState(false);
   const [splitOurAmount, setSplitOurAmount] = useState<string>("");
   // splitMode の「総額」は通常の amount フィールドを再利用する（カード請求額 = 家計分 + 立替分）。
-  const defaultPaymentMethodId = useMemo(() => {
-    const isAmex = (m: PaymentMethodRow) => /AMEX.*Bonvoy.*Premium/i.test(m.name);
-    const own = paymentMethods.find((m) => isAmex(m) && m.user_id === users[0]?.id);
-    if (own) return own.id;
-    const any = paymentMethods.find(isAmex);
-    return any?.id ?? null;
-  }, [paymentMethods, users]);
   const [paymentMethodId, setPaymentMethodId] = useState<string | null>(defaultPaymentMethodId);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();

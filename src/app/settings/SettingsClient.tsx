@@ -31,6 +31,7 @@ import {
   upsertCashBalance,
   deleteCashBalance,
   renameHousehold,
+  updateHouseholdDefaults,
   inviteMember,
   switchHousehold,
   changeMemberRole,
@@ -142,6 +143,8 @@ export default function SettingsClient({
           <HouseholdSettings
             household={household}
             memberships={memberships}
+            users={users}
+            paymentMethods={paymentMethods}
             start={start}
             onError={setErr}
             pending={pending}
@@ -392,6 +395,16 @@ function DataManagement({ role }: { role: "owner" | "editor" | "viewer" }) {
 
   return (
     <div className="space-y-4">
+      <section className="card space-y-3">
+        <h2 className="font-semibold">クレカ明細の突合</h2>
+        <p className="text-sm text-muted-foreground">
+          月次のカード明細 CSV をアップロードして、家計簿との差分を確認・補正できます。AMEX 形式と汎用パーサに対応。
+        </p>
+        <a href="/reconcile" className="btn-secondary text-sm inline-block w-full sm:w-auto text-center">
+          明細インポートを開く
+        </a>
+      </section>
+
       <section className="card space-y-3">
         <h2 className="font-semibold">データのエクスポート</h2>
         <p className="text-sm text-muted-foreground">
@@ -1508,18 +1521,31 @@ function BulkPaymentMethodAssign({
 function HouseholdSettings({
   household,
   memberships,
+  users,
+  paymentMethods,
   start,
   onError,
   pending,
 }: {
   household: HouseholdMembership;
   memberships: HouseholdMembership[];
+  users: UserRow[];
+  paymentMethods: PaymentMethodRow[];
   start: (fn: () => void) => void;
   onError: (e: string | null) => void;
   pending: boolean;
 }) {
   const router = useRouter();
   const [name, setName] = useState(household.household.name);
+  const [defaultUserId, setDefaultUserId] = useState<string>(
+    household.household.default_user_id ?? "",
+  );
+  const [defaultPmId, setDefaultPmId] = useState<string>(
+    household.household.default_payment_method_id ?? "",
+  );
+  const defaultsDirty =
+    (household.household.default_user_id ?? "") !== defaultUserId ||
+    (household.household.default_payment_method_id ?? "") !== defaultPmId;
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"owner" | "editor" | "viewer">("editor");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
@@ -1574,6 +1600,73 @@ function HouseholdSettings({
         {!isOwner && (
           <p className="text-xs text-muted-foreground mt-1">変更はオーナーのみ可能です。</p>
         )}
+      </div>
+
+      <div>
+        <h2 className="font-semibold mb-1">取引入力のデフォルト</h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          ホームタブで取引を入力する際に最初から選ばれている支払者とクレジットカードを指定できます。空欄なら「先頭のメンバー」「未選択」になります。
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="text-xs space-y-1">
+            <span className="font-medium">デフォルトの支払者</span>
+            <select
+              className="input"
+              value={defaultUserId}
+              onChange={(e) => setDefaultUserId(e.target.value)}
+              disabled={pending}
+            >
+              <option value="">— 未指定 —</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs space-y-1">
+            <span className="font-medium">デフォルトの支払方法</span>
+            <select
+              className="input"
+              value={defaultPmId}
+              onChange={(e) => setDefaultPmId(e.target.value)}
+              disabled={pending}
+            >
+              <option value="">— 未指定 —</option>
+              {paymentMethods
+                .filter((m) => !m.archived)
+                .map((m) => {
+                  const owner = m.user_id
+                    ? users.find((u) => u.id === m.user_id)?.name
+                    : null;
+                  return (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {owner ? `（${owner}）` : "（共同）"}
+                    </option>
+                  );
+                })}
+            </select>
+          </label>
+        </div>
+        <button
+          className="btn-primary text-sm mt-2"
+          disabled={pending || !defaultsDirty}
+          onClick={() =>
+            start(async () => {
+              onError(null);
+              try {
+                await updateHouseholdDefaults({
+                  default_user_id: defaultUserId || null,
+                  default_payment_method_id: defaultPmId || null,
+                });
+                router.refresh();
+              } catch (e: unknown) {
+                onError(e instanceof Error ? e.message : String(e));
+              }
+            })
+          }
+        >
+          保存
+        </button>
       </div>
 
       <div>

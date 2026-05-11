@@ -12,9 +12,17 @@ const withSerwist = withSerwistInit({
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    serverActions: { bodySizeLimit: "2mb" },
+    // Lifted from the default 1MB and the previous 2MB cap so credit-card
+    // PDF statements (~5–8MB once base64-encoded becomes ~10MB) can flow
+    // through importCardStatement as a Server Action.
+    serverActions: { bodySizeLimit: "12mb" },
     // Tree-shakes recharts (~100kB savings) and de-duplicates clsx imports.
     optimizePackageImports: ["recharts", "clsx"],
+    // pdf2json carries its own bundled pdf.js fork with Node-friendly CMap
+    // handling baked in. Marking it external means webpack doesn't try to
+    // re-bundle the worker code at build time; the lambda just requires it
+    // from node_modules at runtime.
+    serverComponentsExternalPackages: ["pdf2json"],
   },
   // Defensive HTTP response headers applied to every route. Caching headers
   // for static assets are added in the second/third entries below.
@@ -59,6 +67,9 @@ const nextConfig = {
       { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
       // Drop access to sensors / payment APIs we don't use.
       { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+      // Block legacy Adobe Flash / PDF cross-domain policy lookups. We never
+      // serve a crossdomain.xml, so deny by header rather than by 404.
+      { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
       { key: "Content-Security-Policy", value: csp },
     ];
 

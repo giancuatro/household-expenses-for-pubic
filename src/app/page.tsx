@@ -56,6 +56,8 @@ export default async function HomePage() {
       kindColors={kindColors}
       showOnboarding={showOnboarding}
       currentMonth={ym}
+      defaultUserId={household.household.default_user_id}
+      defaultPaymentMethodId={household.household.default_payment_method_id}
     />
   );
 }

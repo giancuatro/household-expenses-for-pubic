@@ -19,7 +19,8 @@ import {
   getTickerLabels,
   type StockItem,
 } from "@/lib/stockList";
-import { recordTrade, bulkRecordTrades, deleteInvestmentTransactions } from "../actions/investment";
+import { recordTrade, bulkRecordTrades, deleteInvestmentTransactions, updateTrade } from "../actions/investment";
+import { holdingValueJpy } from "@/lib/stockMath";
 
 type Props = {
   users: UserRow[];
@@ -41,13 +42,6 @@ async function fetchPrice(ticker: string): Promise<LivePrice | null> {
   } catch {
     return null;
   }
-}
-
-/** Compute holding value in JPY using live price if available. */
-function holdingValueJpy(h: InvestmentHoldingRow, live?: LivePrice): number {
-  const priceUnit = live?.priceUnit ?? getPriceUnit(h.ticker);
-  const price = live?.price ?? h.current_price_usd;
-  return Math.round((h.quantity * price) / priceUnit * h.exchange_rate);
 }
 
 function holdingCostJpy(h: InvestmentHoldingRow): number {
@@ -86,6 +80,7 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
   /* Selection mode state for trade history */
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTradeIds, setSelectedTradeIds] = useState<Set<string>>(new Set());
+  const [editingTrade, setEditingTrade] = useState<InvestmentTransactionRow | null>(null);
 
   /* Trade history filter/sort state */
   const [tradeFilter, setTradeFilter] = useState({
@@ -581,6 +576,19 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
                     {selectedTradeIds.size === trades.length ? "全解除" : "全選択"}
                   </button>
                   <button
+                    className="btn-secondary text-xs"
+                    disabled={pending || selectedTradeIds.size !== 1}
+                    title={selectedTradeIds.size === 1 ? "選択した取引を編集" : "編集は1件選択時のみ"}
+                    onClick={() => {
+                      if (selectedTradeIds.size !== 1) return;
+                      const id = Array.from(selectedTradeIds)[0];
+                      const tr = trades.find((t) => t.id === id);
+                      if (tr) setEditingTrade(tr);
+                    }}
+                  >
+                    編集
+                  </button>
+                  <button
                     className="btn-danger text-xs"
                     disabled={pending || selectedTradeIds.size === 0}
                     onClick={() => {
@@ -742,6 +750,225 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
       </section>
 
       {err && <p className="text-sm text-destructive">{err}</p>}
+
+      {editingTrade && (
+        <EditTradeDialog
+          trade={editingTrade}
+          accounts={accounts}
+          users={users}
+          pending={pending}
+          onClose={() => setEditingTrade(null)}
+          onSave={(patched) => {
+            start(async () => {
+              try {
+                await updateTrade(patched);
+                setErr(null);
+                setEditingTrade(null);
+                setSelectMode(false);
+                setSelectedTradeIds(new Set());
+                router.refresh();
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+              }
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* =================== Edit trade dialog =================== */
+function EditTradeDialog({
+  trade,
+  accounts,
+  users,
+  pending,
+  onClose,
+  onSave,
+}: {
+  trade: InvestmentTransactionRow;
+  accounts: InvestmentAccountRow[];
+  users: UserRow[];
+  pending: boolean;
+  onClose: () => void;
+  onSave: (input: {
+    id: string;
+    date: string;
+    account_id: string | null;
+    ticker: string;
+    name: string | null;
+    action: "buy" | "sell";
+    quantity: number;
+    price_usd: number;
+    exchange_rate: number;
+    note: string | null;
+  }) => void;
+}) {
+  const [date, setDate] = useState(trade.date);
+  const [accountId, setAccountId] = useState<string>(trade.account_id ?? "");
+  const [action, setAction] = useState<"buy" | "sell">(trade.action);
+  const [quantity, setQuantity] = useState<string>(String(trade.quantity));
+  const [price, setPrice] = useState<string>(String(trade.price_usd));
+  const [rate, setRate] = useState<string>(String(trade.exchange_rate));
+  const [note, setNote] = useState<string>(trade.note ?? "");
+  const [local, setLocal] = useState<string | null>(null);
+
+  const currency = getTickerCurrency(trade.ticker);
+  const isFund = getPriceUnit(trade.ticker) > 1;
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setLocal(null);
+    const q = Number(quantity);
+    const p = Number(price);
+    const r = Number(rate);
+    if (!Number.isFinite(q) || q <= 0) return setLocal("数量は0より大きい値を入力してください。");
+    if (!Number.isFinite(p) || p < 0) return setLocal("単価は0以上を入力してください。");
+    if (!Number.isFinite(r) || r <= 0) return setLocal("為替レートは0より大きい値を入力してください。");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return setLocal("日付の形式が正しくありません。");
+    onSave({
+      id: trade.id,
+      date,
+      account_id: accountId || null,
+      ticker: trade.ticker,
+      name: trade.name ?? null,
+      action,
+      quantity: q,
+      price_usd: p,
+      exchange_rate: r,
+      note: note.trim() || null,
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+        className="w-full max-w-md bg-card border border-border rounded-xl p-5 shadow-xl space-y-3"
+      >
+        <h3 className="font-semibold text-base">取引を編集</h3>
+        <p className="text-xs text-muted-foreground">
+          銘柄: <span className="font-mono">{trade.ticker}</span>
+          {trade.name ? ` / ${trade.name}` : ""}
+        </p>
+
+        <label className="block space-y-1">
+          <span className="text-xs font-medium">日付</span>
+          <input
+            type="date"
+            className="input"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            required
+          />
+        </label>
+
+        <label className="block space-y-1">
+          <span className="text-xs font-medium">証券口座</span>
+          <select
+            className="input"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+          >
+            <option value="">— 未指定 —</option>
+            {accounts.map((a) => {
+              const owner = users.find((u) => u.id === a.user_id)?.name;
+              return (
+                <option key={a.id} value={a.id}>
+                  {owner ? `${owner} / ${a.account_name}` : a.account_name}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">売買</span>
+            <select
+              className="input"
+              value={action}
+              onChange={(e) => setAction(e.target.value as "buy" | "sell")}
+            >
+              <option value="buy">買付</option>
+              <option value="sell">売却</option>
+            </select>
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">為替レート</span>
+            <input
+              type="number"
+              step="0.0001"
+              className="input"
+              value={rate}
+              onChange={(e) => setRate(e.target.value)}
+              required
+            />
+          </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">数量{isFund ? "（口）" : "（株）"}</span>
+            <input
+              type="number"
+              step="0.000001"
+              className="input"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              required
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">
+              単価（{currency}{isFund ? " / 万口" : ""}）
+            </span>
+            <input
+              type="number"
+              step="0.0001"
+              className="input"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              required
+            />
+          </label>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-xs font-medium">メモ</span>
+          <input
+            type="text"
+            className="input"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            maxLength={400}
+          />
+        </label>
+
+        <p className="text-[11px] text-muted-foreground">
+          ティッカーや銘柄名は変更できません。新規に作り直してください。
+        </p>
+
+        {local && (
+          <p role="alert" className="text-xs text-destructive">
+            {local}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" className="btn-secondary text-sm" onClick={onClose} disabled={pending}>
+            キャンセル
+          </button>
+          <button type="submit" className="btn-primary text-sm" disabled={pending}>
+            {pending ? "保存中..." : "保存"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1195,7 +1422,7 @@ function CsvImport({
   const [userId, setUserId] = useState(users[0]?.id ?? "");
   const [selectedAccountId, setSelectedAccountId] = useState(accounts[0]?.id ?? "");
   const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<{ ok: number; errors: string[] } | null>(null);
+  const [result, setResult] = useState<{ ok: number; skipped: number; errors: string[] } | null>(null);
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -1298,7 +1525,11 @@ function CsvImport({
         </div>
       )}
       {result && (
-        <p className="text-sm mt-2">✅ {result.ok}件インポート {result.errors.length > 0 && `/ ❌ ${result.errors.length}件エラー`}</p>
+        <p className="text-sm mt-2">
+          ✅ {result.ok}件インポート
+          {result.skipped > 0 && ` / ⏭ ${result.skipped}件スキップ（重複）`}
+          {result.errors.length > 0 && ` / ❌ ${result.errors.length}件エラー`}
+        </p>
       )}
     </div>
   );

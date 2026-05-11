@@ -71,6 +71,7 @@ export default function DashboardClient({
   fixedCostMasters,
   holdings,
   trades,
+  initialPrices,
 }: {
   users: UserRow[];
   categories: CategoryRow[];
@@ -80,6 +81,7 @@ export default function DashboardClient({
   fixedCostMasters: FixedCostMasterRow[];
   holdings: InvestmentHoldingRow[];
   trades: InvestmentTransactionRow[];
+  initialPrices?: Record<string, { price: number; priceUnit: number }>;
 }) {
   const [period, setPeriod] = useState<Period>("3m");
   const [hiddenStackCats, setHiddenStackCats] = useState<Set<string>>(new Set());
@@ -324,7 +326,7 @@ export default function DashboardClient({
       </section>
 
       {/* ============ Asset trend (independent period) ============ */}
-      <AssetTrendChart holdings={holdings} trades={trades} />
+      <AssetTrendChart holdings={holdings} trades={trades} initialPrices={initialPrices} />
 
       {/* ============ Spend pace + large-spend highlights ============ */}
       <SpendPace transactions={transactions} categories={categories} currentMonth={monthKey()} />

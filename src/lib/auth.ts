@@ -25,6 +25,8 @@ export interface HouseholdMembership {
     currency: string;
     locale: string;
     onboarding_completed_at: string | null;
+    default_user_id: string | null;
+    default_payment_method_id: string | null;
   };
 }
 
@@ -65,7 +67,7 @@ export const getSession = cache(async (): Promise<SessionContext | null> => {
   const { data: rows, error } = await admin
     .from("household_members")
     .select(
-      "household_id, role, display_name, household:households(id, name, currency, locale, onboarding_completed_at)",
+      "household_id, role, display_name, household:households(id, name, currency, locale, onboarding_completed_at, default_user_id, default_payment_method_id)",
     )
     .eq("auth_user_id", user.id);
   if (error) throw new Error(error.message);

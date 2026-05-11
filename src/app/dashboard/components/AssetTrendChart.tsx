@@ -22,6 +22,7 @@ import {
   type Granularity,
   type TickerMeta,
 } from "@/lib/assetHistory";
+import type { LivePriceLike } from "@/lib/stockMath";
 
 type AssetPeriod = "1w" | "1m" | "3m" | "6m" | "ytd" | "all";
 type ChartMode = "area" | "line";
@@ -77,9 +78,17 @@ function iso(d: Date): string {
 export default function AssetTrendChart({
   holdings,
   trades,
+  initialPrices,
 }: {
   holdings: InvestmentHoldingRow[];
   trades: InvestmentTransactionRow[];
+  /**
+   * Server-prefetched live prices (price + priceUnit per ticker). Match the
+   * investment tab's SSR prefetch so the chart's right edge agrees with the
+   * investment headline from the very first paint — no flicker as a
+   * client-side fetch races to fill in.
+   */
+  initialPrices?: Record<string, LivePriceLike>;
 }) {
   const theme = useChartTheme();
   const ASSET_COLORS = theme.palette;
@@ -104,11 +113,11 @@ export default function AssetTrendChart({
       return;
     }
     setLoading(true);
-    // Fetch the live price for every ticker we may need, then pass it into
-    // buildAssetHistory so the chart's right-most data point uses live prices
-    // (matches the headline total on the investment tab). If a price fetch
-    // fails the entry is just omitted — buildAssetHistory falls back to
-    // history/snapshot in that case.
+    // Fetch the live price (price + priceUnit) for every ticker we may need.
+    // initialPrices was server-prefetched in dashboard/page.tsx using the same
+    // helper the investment tab uses, so the chart starts with prices that
+    // *already* agree with the investment headline; the client-side fetch
+    // refreshes them, and any tickers the SSR fetch missed get filled in.
     const allTickers = Array.from(new Set([
       ...holdings.map((h) => h.ticker),
       ...trades.map((t) => t.ticker),
@@ -118,15 +127,21 @@ export default function AssetTrendChart({
         try {
           const res = await fetch(`/api/stock-price?ticker=${encodeURIComponent(ticker)}`);
           if (!res.ok) return [ticker, null] as const;
-          const json: { price?: number; error?: string } = await res.json();
+          const json: { price?: number; priceUnit?: number; error?: string } = await res.json();
           if (json.error || typeof json.price !== "number") return [ticker, null] as const;
-          return [ticker, json.price] as const;
+          return [
+            ticker,
+            { price: json.price, priceUnit: json.priceUnit } as LivePriceLike,
+          ] as const;
         } catch {
           return [ticker, null] as const;
         }
       }),
     ).then((entries) => {
-      const m = new Map<string, number>();
+      const m = new Map<string, LivePriceLike>();
+      // Seed with SSR prefetch so the first frame already uses live values.
+      if (initialPrices) for (const [k, v] of Object.entries(initialPrices)) m.set(k, v);
+      // Overlay client-side fetch results (fresher).
       for (const [t, p] of entries) if (p !== null) m.set(t, p);
       return m;
     });
@@ -157,7 +172,7 @@ export default function AssetTrendChart({
     return () => {
       cancelled = true;
     };
-  }, [holdings, trades, effectiveGranularity, period]);
+  }, [holdings, trades, effectiveGranularity, period, initialPrices]);
 
   const filtered = useMemo(() => {
     if (period === "all") return rows;
