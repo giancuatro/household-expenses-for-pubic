@@ -28,18 +28,27 @@ type StockHistoryResponse = {
 /**
  * Reconstruct holdings over time and value them at the appropriate price per period.
  *
- * Quantities are replayed from `trades` so each row reflects what was actually held
- * at that point in time (not the current snapshot). FX rate uses the latest known
- * rate per ticker (from holdings, falling back to the most recent trade).
+ * Historical quantities are computed by walking BACK from today's holdings
+ * snapshot — for each (account, ticker) we take today's quantity and subtract
+ * any trades that happened AFTER the target date. Anchoring on the snapshot
+ * (rather than replaying every trade from t=0) keeps the chart continuous
+ * with the live "today" total in two cases the replay-only path mishandles:
  *
- * Daily granularity carries forward the last known price for weekends/holidays so the
- * series is continuous. Months earlier than a ticker's first trade are 0.
+ *   - Holdings were edited / reimported without matching trade rows. Replay
+ *     from trades silently undercounts; the chart then jumps when the live
+ *     point arrives.
+ *   - The same ticker spans multiple accounts at different exchange rates.
+ *     Anchored math sums per-(account,ticker) so each account contributes
+ *     at its own FX, matching what InvestmentClient's headline shows.
  *
- * If `livePrices` is provided, an additional "today" data point is appended whose
- * value uses the live price per ticker — this keeps the chart's right-most value
- * consistent with the live total displayed on the investment tab. (Without this,
- * the chart's latest point is yesterday's close (daily) or last-month close
- * (monthly), causing a visible mismatch.)
+ * Daily granularity carries forward the last known price for weekends /
+ * holidays so the series is continuous. Months earlier than a ticker's first
+ * holding/trade are 0.
+ *
+ * If `livePrices` is provided, an additional "today" data point is appended
+ * (or overwrites today's historical close) whose value uses the live API
+ * price per ticker — keeping the chart's right-most value identical to the
+ * investment tab.
  */
 export async function buildAssetHistory({
   trades,
@@ -72,20 +81,41 @@ export async function buildAssetHistory({
   }
 
   const nameByTicker = new Map<string, string>();
-  const fxByTicker = new Map<string, number>();
-  for (const h of holdings) {
-    if (h.name) nameByTicker.set(h.ticker, h.name);
-    if (h.exchange_rate) fxByTicker.set(h.ticker, h.exchange_rate);
-  }
+  for (const h of holdings) if (h.name) nameByTicker.set(h.ticker, h.name);
   const tradesDesc = [...trades].sort((a, b) => b.date.localeCompare(a.date));
   for (const t of tradesDesc) {
     if (!nameByTicker.has(t.ticker) && t.name) nameByTicker.set(t.ticker, t.name);
-    if (!fxByTicker.has(t.ticker) && t.exchange_rate) fxByTicker.set(t.ticker, t.exchange_rate);
   }
 
   const fallbackPriceByTicker = new Map<string, number>();
   for (const h of holdings) {
     if (h.current_price_usd) fallbackPriceByTicker.set(h.ticker, h.current_price_usd);
+  }
+
+  // ─── Anchor: dedupe holdings to "latest per (account, ticker)" and use
+  // those as the t=today snapshot. Historical quantities are derived by
+  // subtracting trades that happened AFTER the target date.
+  const sortedHoldings = [...holdings].sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
+  const seenAcctTicker = new Set<string>();
+  const latestHoldings = sortedHoldings.filter((h) => {
+    const k = `${h.account_id}::${h.ticker}`;
+    if (seenAcctTicker.has(k)) return false;
+    seenAcctTicker.add(k);
+    return true;
+  });
+
+  // Group trades by (account_id, ticker) so the per-row backwalk doesn't
+  // have to scan every trade for every date × ticker × account combo.
+  const tradesByAcctTicker = new Map<string, InvestmentTransactionRow[]>();
+  for (const t of trades) {
+    if (!t.account_id) continue;
+    const k = `${t.account_id}::${t.ticker}`;
+    let arr = tradesByAcctTicker.get(k);
+    if (!arr) {
+      arr = [];
+      tradesByAcctTicker.set(k, arr);
+    }
+    arr.push(t);
   }
 
   // Fetch price history for each ticker at the requested granularity, in parallel.
@@ -161,31 +191,48 @@ export async function buildAssetHistory({
     resolvedPriceByTicker.set(ticker, map);
   }
 
-  // Now compute rows.
+  // ─── Build per-date rows by walking each (account, ticker) holding back
+  // from today via tradesByAcctTicker. Iterating holdings (not tickers)
+  // means we naturally pick up each account's own exchange_rate and we
+  // anchor on the live snapshot, so this row at "today" coincides exactly
+  // with the live row computed below.
   const rows: AssetSeriesRow[] = [];
   for (const key of axis) {
     const replayUpTo = granularity === "monthly" ? lastDayOfMonth(key) : key;
     const row: AssetSeriesRow = { date: key, total: 0 };
-    for (const ticker of tickers) {
-      const earliest = earliestByTicker.get(ticker);
-      if (!earliest || key < earliest.slice(0, key.length)) {
-        row[ticker] = 0;
-        continue;
-      }
-      const quantity = quantityAt(trades, ticker, replayUpTo);
-      if (quantity <= 0) {
-        row[ticker] = 0;
-        continue;
-      }
-      const priceUnit = getPriceUnit(ticker);
-      const price = resolvedPriceByTicker.get(ticker)?.get(key) ?? fallbackPriceByTicker.get(ticker);
-      if (price === undefined) {
-        row[ticker] = 0;
-        continue;
-      }
-      const fx = fxByTicker.get(ticker) ?? 1;
-      const value = Math.round((quantity * price * fx) / priceUnit);
-      row[ticker] = value;
+    for (const ticker of tickers) row[ticker] = 0;
+
+    for (const h of latestHoldings) {
+      const earliest = earliestByTicker.get(h.ticker);
+      // Only suppress the ticker on dates BEFORE its first known trade —
+      // and only when trade history exists. Holdings without trades stay
+      // visible across the whole window.
+      if (earliest && key < earliest.slice(0, key.length)) continue;
+
+      const qty = quantityAtAnchored(
+        tradesByAcctTicker,
+        h.account_id,
+        h.ticker,
+        h.quantity,
+        replayUpTo,
+      );
+      if (qty <= 0) continue;
+
+      // Historical price: prefer the API-fetched bar; if missing, fall back
+      // to the LIVE price (livePrices) before considering the holding's
+      // stored current_price_usd. Live is a better stand-in than the
+      // stored price because the stored value is the snapshot's reference
+      // price and may reflect an old fetch.
+      const live = livePrices?.get(h.ticker);
+      const price =
+        resolvedPriceByTicker.get(h.ticker)?.get(key) ??
+        live?.price ??
+        fallbackPriceByTicker.get(h.ticker);
+      if (price === undefined) continue;
+
+      const priceUnit = live?.priceUnit ?? getPriceUnit(h.ticker);
+      const value = Math.round((qty * price) / priceUnit * h.exchange_rate);
+      row[h.ticker] = ((row[h.ticker] as number) ?? 0) + value;
       row.total += value;
     }
     rows.push(row);
@@ -216,18 +263,7 @@ export async function buildAssetHistory({
       return isoOf(today);
     })();
 
-    // Dedupe holdings → latest per (account_id, ticker). holdings are
-    // expected pre-sorted by fetched_at desc by the queries layer; we
-    // re-sort defensively so this function never depends on caller order.
-    const sortedHoldings = [...holdings].sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
-    const seenAcctTicker = new Set<string>();
-    const latestHoldings = sortedHoldings.filter((h) => {
-      const k = `${h.account_id}::${h.ticker}`;
-      if (seenAcctTicker.has(k)) return false;
-      seenAcctTicker.add(k);
-      return true;
-    });
-
+    // latestHoldings is already deduped at the top of this function.
     const liveRow: AssetSeriesRow = { date: todayKey, total: 0 };
     for (const ticker of tickers) liveRow[ticker] = 0;
 
@@ -271,14 +307,31 @@ export async function buildAssetHistory({
   return { rows, tickers: tickerMetas };
 }
 
-function quantityAt(trades: InvestmentTransactionRow[], ticker: string, dateInclusive: string): number {
-  let qty = 0;
-  for (const t of trades) {
-    if (t.ticker !== ticker) continue;
-    if (t.date > dateInclusive) continue;
-    qty += t.action === "buy" ? t.quantity : -t.quantity;
+/**
+ * Historical quantity for one (account, ticker) pair, anchored to today's
+ * holdings snapshot. Subtracts any trades that happened AFTER dateInclusive
+ * — those are events that hadn't yet occurred on that date, so the user
+ * must have held `todayQty - sum(post-date trades)` then.
+ *
+ * Anchoring on the snapshot (rather than replaying from t=0) keeps the
+ * historical line continuous with the live point even when trades and
+ * holdings disagree (which happens after holding-row edits or imports).
+ */
+function quantityAtAnchored(
+  tradesByAcctTicker: Map<string, InvestmentTransactionRow[]>,
+  accountId: string | null,
+  ticker: string,
+  todayQty: number,
+  dateInclusive: string,
+): number {
+  if (!accountId) return todayQty;
+  const ts = tradesByAcctTicker.get(`${accountId}::${ticker}`) ?? [];
+  let after = 0;
+  for (const t of ts) {
+    if (t.date <= dateInclusive) continue;
+    after += t.action === "buy" ? t.quantity : -t.quantity;
   }
-  return qty;
+  return todayQty - after;
 }
 
 function lastDayOfMonth(ym: string): string {
