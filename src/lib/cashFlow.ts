@@ -284,7 +284,13 @@ export function buildCashFlowProjection({
     }
   }
 
-  const start = fromDate && fromDate >= anchor.as_of_date ? fromDate : anchor.as_of_date;
+  // Simulate from the anchor date, not from `fromDate`. Events between the
+  // anchor and the visible window (e.g. a 5/10 引落 when the snapshot is 5/1
+  // and `fromDate` is 5/13) must apply to `running` — otherwise today's
+  // predicted balance silently inherits the stale anchor balance.
+  // `fromDate` only controls the slice of `days` returned for display.
+  const displayStart =
+    fromDate && fromDate >= anchor.as_of_date ? fromDate : anchor.as_of_date;
   const days: CashFlowDay[] = [];
   let running = anchor.balance;
   let firstShortfallDate: string | null = null;
@@ -292,31 +298,30 @@ export function buildCashFlowProjection({
   let upcomingInflow = 0;
   const todayKey = todayIsoLocal();
 
-  for (const day of listDaysInclusive(start, endDate)) {
+  for (const day of listDaysInclusive(anchor.as_of_date, endDate)) {
+    let evs: CashFlowEvent[];
+    let net = 0;
     if (day === anchor.as_of_date) {
       const noteSuffix = anchor.note ? ` (${anchor.note})` : "";
-      days.push({
+      evs = [{
         date: day,
-        balance: running,
-        netChange: 0,
-        events: [{
-          date: day,
-          amount: 0,
-          label: `スナップショット${noteSuffix}`,
-          count: 1,
-          kind: "snapshot",
-        }],
-      });
-      continue;
+        amount: 0,
+        label: `スナップショット${noteSuffix}`,
+        count: 1,
+        kind: "snapshot",
+      }];
+    } else {
+      const dayMap = bucketsByDate.get(day);
+      evs = dayMap
+        ? [...dayMap.values()].sort((a, b) => a.amount - b.amount) // outflows first
+        : [];
+      net = evs.reduce((s, e) => s + e.amount, 0);
+      running += net;
     }
-    const dayMap = bucketsByDate.get(day);
-    const evs: CashFlowEvent[] = dayMap
-      ? [...dayMap.values()].sort((a, b) => a.amount - b.amount) // outflows first
-      : [];
-    const net = evs.reduce((s, e) => s + e.amount, 0);
-    running += net;
-    days.push({ date: day, balance: running, netChange: net, events: evs });
-    if (firstShortfallDate === null && running < 0) firstShortfallDate = day;
+    if (day >= displayStart) {
+      days.push({ date: day, balance: running, netChange: net, events: evs });
+      if (firstShortfallDate === null && running < 0) firstShortfallDate = day;
+    }
     if (day >= todayKey) {
       for (const e of evs) {
         if (e.amount < 0) upcomingOutflow += -e.amount;
