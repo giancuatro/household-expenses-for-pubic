@@ -6,6 +6,7 @@ import {
   listPaymentMethods,
   listCashBalanceSnapshots,
   listFixedCostMasters,
+  listPendingFxTransactions,
 } from "@/lib/queries";
 import { requireSession } from "@/lib/auth";
 import { fetchLivePricesWithTimeout, type LivePrice } from "@/lib/stockPrice";
@@ -19,7 +20,7 @@ export default async function DashboardPage() {
   const hid = household.household_id;
   const sb = getSupabaseServer();
 
-  const [users, categories, txns, paymentMethods, cashSnapshots, fixedCostMasters, tradesRes, holdingsRes] =
+  const [users, categories, txns, paymentMethods, cashSnapshots, fixedCostMasters, pendingFx, tradesRes, holdingsRes] =
     await Promise.all([
       listUsers(hid),
       listCategories(hid),
@@ -27,6 +28,7 @@ export default async function DashboardPage() {
       listPaymentMethods(hid).catch(() => []),
       listCashBalanceSnapshots(hid).catch(() => []),
       listFixedCostMasters(hid).catch(() => []),
+      listPendingFxTransactions(hid).catch(() => []),
       sb
         .from("investment_transactions")
         .select("*")
@@ -38,6 +40,11 @@ export default async function DashboardPage() {
         .eq("household_id", hid)
         .order("fetched_at", { ascending: false }),
     ]);
+
+  const pendingFxSummary = {
+    count: pendingFx.length,
+    totalEstimateJpy: pendingFx.reduce((s, t) => s + t.amount, 0),
+  };
 
   const latestHoldings = new Map<string, InvestmentHoldingRow>();
   for (const h of (holdingsRes.data ?? []) as InvestmentHoldingRow[]) {
@@ -67,6 +74,7 @@ export default async function DashboardPage() {
       holdings={holdings}
       trades={trades}
       initialPrices={initialPrices}
+      pendingFxSummary={pendingFxSummary}
     />
   );
 }

@@ -6,6 +6,7 @@ import {
   acceptMatch,
   archiveImport,
   bulkAcceptHighConfidence,
+  bulkAcceptFxMatches,
   bulkCreateFamilyCard,
   createTransactionFromCard,
   ignoreCardRow,
@@ -83,10 +84,14 @@ export default function ReconcileClient({
 
   // Derived counts for the summary bar.
   const stats = useMemo(() => {
-    let confirmed = 0, suggested = 0, unmatched = 0, created = 0, ignored = 0, familyUnmatched = 0;
+    let confirmed = 0, suggested = 0, unmatched = 0, created = 0, ignored = 0, familyUnmatched = 0, fxSuggested = 0;
     for (const r of stagingRows) {
       if (r.status === "confirmed") confirmed++;
-      else if (r.status === "suggested") suggested++;
+      else if (r.status === "suggested") {
+        suggested++;
+        const matched = r.matched_transaction_id ? txnById.get(r.matched_transaction_id) : null;
+        if (matched?.fx_status === "pending") fxSuggested++;
+      }
       else if (r.status === "unmatched") {
         unmatched++;
         if (r.cardholder === "family") familyUnmatched++;
@@ -94,8 +99,8 @@ export default function ReconcileClient({
       else if (r.status === "created") created++;
       else if (r.status === "ignored") ignored++;
     }
-    return { confirmed, suggested, unmatched, created, ignored, familyUnmatched };
-  }, [stagingRows]);
+    return { confirmed, suggested, unmatched, created, ignored, familyUnmatched, fxSuggested };
+  }, [stagingRows, txnById]);
 
   // Transactions on this card+period that no card row claims = "余分" (orphan
   // app-side transaction, possibly a duplicate or refunded charge).
@@ -190,6 +195,17 @@ export default function ReconcileClient({
               title="家族カードの未照合行をすべて妻の個人支出として登録します"
             >
               家族カード分を個人支出で登録 ({stats.familyUnmatched})
+            </button>
+          )}
+          {stats.fxSuggested > 0 && (
+            <button
+              type="button"
+              className="btn-secondary text-sm"
+              disabled={pending}
+              onClick={withErr(() => bulkAcceptFxMatches({ importId: importRow.id }))}
+              title="未確定 FX 取引に一致した候補を承認し、円額と為替レートを確定します"
+            >
+              ✈️ 旅行 FX を一括確定 ({stats.fxSuggested})
             </button>
           )}
           <button

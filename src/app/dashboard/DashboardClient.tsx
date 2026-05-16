@@ -72,6 +72,7 @@ export default function DashboardClient({
   holdings,
   trades,
   initialPrices,
+  pendingFxSummary,
 }: {
   users: UserRow[];
   categories: CategoryRow[];
@@ -82,6 +83,7 @@ export default function DashboardClient({
   holdings: InvestmentHoldingRow[];
   trades: InvestmentTransactionRow[];
   initialPrices?: Record<string, { price: number; priceUnit: number }>;
+  pendingFxSummary?: { count: number; totalEstimateJpy: number };
 }) {
   const [period, setPeriod] = useState<Period>("3m");
   const [hiddenStackCats, setHiddenStackCats] = useState<Set<string>>(new Set());
@@ -180,6 +182,23 @@ export default function DashboardClient({
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">ダッシュボード</h1>
+
+      {pendingFxSummary && pendingFxSummary.count > 0 && (
+        <a
+          href="/reconcile"
+          className="card flex items-center justify-between gap-3 border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition-colors"
+        >
+          <div>
+            <div className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+              ✈️ 未確定 FX 取引: {pendingFxSummary.count}件（見積り {yen(pendingFxSummary.totalEstimateJpy)}）
+            </div>
+            <div className="text-xs text-amber-700/80 dark:text-amber-400/80 mt-0.5">
+              カード明細をインポートすると、レートと円額が自動で確定されます。
+            </div>
+          </div>
+          <span className="text-amber-700 dark:text-amber-400 shrink-0">→</span>
+        </a>
+      )}
 
       {/* ============ Cash flow projection (next 60 days) ============ */}
       <CashFlowProjection

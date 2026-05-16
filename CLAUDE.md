@@ -37,6 +37,14 @@
 - 家族カード行は妻の個人支出として扱う運用。`bulkCreateFamilyCard` server action が一括登録を担う。
 - 新しいカード発行元 PDF を追加する時は `src/lib/csvImport/pdfAuto.ts` の戦略リストに追加し、`card_pdf_format_memory` が学習する仕組みに従う。
 
+### 6. 旅行モード（多通貨 + FX 後追い確定）
+
+- `trips` テーブル + `transactions` の 4 列 (`original_amount` / `original_currency` / `fx_rate` / `fx_status`) + `trip_id`。
+- `transactions.amount` は **常に JPY 整数**。`fx_status='pending'` の行は `round(original_amount * fx_rate)` の見積り、`finalized` で実額に置き換わる。
+- 旅行中の入力 UI は [src/components/ui/ForeignMoneyInput.tsx](src/components/ui/ForeignMoneyInput.tsx)。`HomeClient` 内で `activeTrip` が prop に乗ったとき自動的に表示。
+- カード明細インポートの `runMatcher` に **Pass 1.5** が入っていて、`isPlausibleRate` で為替妥当性をチェックして提案 (confidence 70–90)。`acceptMatch` / `bulkAcceptHighConfidence` / `bulkAcceptFxMatches` で `finalizeFxIfPending` が走る。
+- 通貨マスター + 妥当性レンジは [src/lib/currencyList.ts](src/lib/currencyList.ts) 1 ファイルに集約。新規通貨はここに追記すれば全体が拾う。
+
 ## ローカル検証コマンド
 
 ```bash

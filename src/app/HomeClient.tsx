@@ -15,6 +15,7 @@ import type {
   PaymentMethodRow,
   KindColorRow,
   ColorKindKey,
+  TripRow,
 } from "@/lib/types";
 import { yen, formatJaDate, todayIso, formatJaMonth, addMonths, monthKey } from "@/lib/format";
 import { buildCategoryColorMap, buildKindColorMap, type CategoryColors } from "@/lib/categoryColors";
@@ -30,7 +31,11 @@ import {
   bulkDeleteTransactions,
   createSplitTransaction,
   listUnsettledAdvances,
+  settleTransactionFx,
 } from "./actions/transactions";
+import { ForeignMoneyInput } from "@/components/ui/ForeignMoneyInput";
+import { FxSettleSheet } from "@/components/ui/FxSettleSheet";
+import { formatForeign, getCurrency } from "@/lib/currencyList";
 import {
   Sheet,
   SheetContent,
@@ -56,6 +61,8 @@ type Props = {
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
   kindColors: KindColorRow[];
+  /** Phase 7: active trip pins (currency, est_rate) for travel-mode entry. NULL = JPY-only. */
+  activeTrip: TripRow | null;
   /** True when this household has not yet completed onboarding. */
   showOnboarding: boolean;
   currentMonth: string;
@@ -120,6 +127,7 @@ export default function HomeClient({
   paymentMethods,
   cashSnapshots,
   kindColors,
+  activeTrip,
   showOnboarding,
   currentMonth,
   defaultUserId,
@@ -160,6 +168,16 @@ export default function HomeClient({
   const [note, setNote] = useState("");
   const [date, setDate] = useState(todayIso());
   const [isAdvance, setIsAdvance] = useState(false);
+  /* ----- Travel mode (Phase 7) ----- */
+  // When an active trip is loaded, fxMode defaults to ON so the user just
+  // types the local amount without having to flip a toggle every time. The
+  // toggle lets them override per-entry (e.g. an ATM withdrawal already in
+  // JPY) or keep recording JPY transactions made back home.
+  const [fxMode, setFxMode] = useState<boolean>(!!activeTrip);
+  const [foreignAmount, setForeignAmount] = useState<string>("");
+  const [fxCurrency, setFxCurrency] = useState<string>(activeTrip?.default_currency ?? "USD");
+  const [fxRate, setFxRate] = useState<string>(activeTrip ? String(activeTrip.est_rate) : "");
+  const [fxSettleTarget, setFxSettleTarget] = useState<TransactionRow | null>(null);
   /* ----- Split (group bill) mode ----- */
   const [splitMode, setSplitMode] = useState(false);
   const [splitOurAmount, setSplitOurAmount] = useState<string>("");
@@ -397,6 +415,12 @@ export default function HomeClient({
     setSplitMode(false);
     setSplitOurAmount("");
     setPaymentMethodId(defaultPaymentMethodId);
+    // Reset FX inputs but keep fxMode locked to "on" while a trip is active —
+    // the next entry is overwhelmingly likely another foreign-currency one.
+    setForeignAmount("");
+    setFxMode(!!activeTrip);
+    setFxCurrency(activeTrip?.default_currency ?? "USD");
+    setFxRate(activeTrip ? String(activeTrip.est_rate) : "");
   }
 
   function submit(e: React.FormEvent) {
@@ -406,9 +430,26 @@ export default function HomeClient({
       (document.activeElement as HTMLElement | null)?.blur();
     }
     setError(null);
-    const amt = parseInt(amount.replace(/,/g, ""), 10);
+
+    // Travel mode: validate the foreign-currency triple here, then compute
+    // the JPY estimate so the rest of the submit path treats it like a normal
+    // entry (the server re-computes the canonical amount).
+    const fxOrigNum = fxMode ? parseFloat(foreignAmount) : NaN;
+    const fxRateNum = fxMode ? parseFloat(fxRate) : NaN;
+    const fxJpyEstimate =
+      fxMode && Number.isFinite(fxOrigNum) && Number.isFinite(fxRateNum) && fxOrigNum > 0 && fxRateNum > 0
+        ? Math.max(1, Math.round(fxOrigNum * fxRateNum))
+        : null;
+    const amt = fxMode ? (fxJpyEstimate ?? 0) : parseInt(amount.replace(/,/g, ""), 10);
+
     if (!userId) return setError("支払い者を選択してください。");
-    if (!Number.isFinite(amt) || amt <= 0) return setError("金額を入力してください。");
+    if (fxMode) {
+      if (!Number.isFinite(fxOrigNum) || fxOrigNum <= 0) return setError("現地通貨の金額を入力してください。");
+      if (!Number.isFinite(fxRateNum) || fxRateNum <= 0) return setError("為替レートを入力してください。");
+      if (splitMode) return setError("旅行モードと「立替を分割」は同時に使えません。");
+    } else {
+      if (!Number.isFinite(amt) || amt <= 0) return setError("金額を入力してください。");
+    }
     if (txnKind === "variable") {
       if (!categoryId) return setError("項目を選択してください。");
     }
@@ -456,6 +497,13 @@ export default function HomeClient({
           note: note || null,
           is_advance_payment: isAdvance,
           payment_method_id: paymentMethodId,
+          // Phase 7: when fxMode is on, pass the foreign-currency triple. The
+          // server overwrites `amount` with round(original_amount * fx_rate),
+          // stamps fx_status='pending', and links to the active trip.
+          original_amount: fxMode ? fxOrigNum : null,
+          original_currency: fxMode ? fxCurrency : null,
+          fx_rate: fxMode ? fxRateNum : null,
+          trip_id: fxMode && activeTrip ? activeTrip.id : null,
         });
         reset();
         setEntryOpen(false);
@@ -483,6 +531,18 @@ export default function HomeClient({
     setDate(editingTxn.date);
     setIsAdvance(editingTxn.is_advance_payment);
     setPaymentMethodId(editingTxn.payment_method_id);
+    // FX-aware hydration: if this row carries foreign-currency metadata, pop
+    // the entry sheet back into travel mode so the user is editing the
+    // original_amount/currency/rate, not the derived JPY value.
+    if (editingTxn.original_currency && editingTxn.original_amount != null && editingTxn.fx_rate != null) {
+      setFxMode(true);
+      setForeignAmount(String(editingTxn.original_amount));
+      setFxCurrency(editingTxn.original_currency);
+      setFxRate(String(editingTxn.fx_rate));
+    } else {
+      setFxMode(false);
+      setForeignAmount("");
+    }
     setEntryOpen(true);
   }, [editingTxn]);
 
@@ -552,20 +612,49 @@ export default function HomeClient({
           </div>
 
           <div>
-            <div className="text-xs text-muted-foreground mb-2">② 金額</div>
-            <MoneyInput
-              enterKeyHint="done"
-              className="input text-2xl text-right font-semibold"
-              placeholder="0"
-              value={amount}
-              onChange={setAmount}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                }
-              }}
-            />
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs text-muted-foreground">② 金額</div>
+              {activeTrip && (
+                <button
+                  type="button"
+                  onClick={() => setFxMode((v) => !v)}
+                  className={clsx(
+                    "chip border text-[11px]",
+                    fxMode
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-card border-border",
+                  )}
+                  title={`旅行: ${activeTrip.name}（${activeTrip.default_currency}）`}
+                >
+                  ✈️ 旅行モード {fxMode ? "ON" : "OFF"}
+                </button>
+              )}
+            </div>
+            {fxMode ? (
+              <ForeignMoneyInput
+                amount={foreignAmount}
+                onAmountChange={setForeignAmount}
+                currency={fxCurrency}
+                onCurrencyChange={setFxCurrency}
+                rate={fxRate}
+                onRateChange={setFxRate}
+                tripDefaultCurrency={activeTrip?.default_currency ?? null}
+              />
+            ) : (
+              <MoneyInput
+                enterKeyHint="done"
+                className="input text-2xl text-right font-semibold"
+                placeholder="0"
+                value={amount}
+                onChange={setAmount}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+            )}
           </div>
 
           <div>
@@ -1316,6 +1405,7 @@ export default function HomeClient({
                   selected={selectedIds.has(t.id)}
                   onToggleSelect={() => toggleSelected(t.id)}
                   onEdit={() => setEditingTxn(t)}
+                  onSettleFx={() => setFxSettleTarget(t)}
                 />
               );
             })}
@@ -1333,6 +1423,26 @@ export default function HomeClient({
           )}
         </ul>
       </section>
+
+      {fxSettleTarget && (
+        <FxSettleSheet
+          txn={fxSettleTarget}
+          pending={pending}
+          onClose={() => setFxSettleTarget(null)}
+          onSubmit={(input) => {
+            startTransition(async () => {
+              try {
+                await settleTransactionFx({ id: fxSettleTarget.id, ...input });
+                toast.success("FX を確定しました");
+                setFxSettleTarget(null);
+                router.refresh();
+              } catch (err: unknown) {
+                toast.error(err instanceof Error ? err.message : String(err));
+              }
+            });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1388,6 +1498,7 @@ function TxnRow({
   selected,
   onToggleSelect,
   onEdit,
+  onSettleFx,
 }: {
   t: TransactionRow;
   userName: string;
@@ -1400,6 +1511,8 @@ function TxnRow({
   selected: boolean;
   onToggleSelect: () => void;
   onEdit: () => void;
+  /** Open the FX-settle modal for a pending-FX row. */
+  onSettleFx: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
@@ -1500,6 +1613,37 @@ function TxnRow({
               )}
             >
               {t.note}
+            </div>
+          )}
+          {t.original_currency && t.original_amount != null && (
+            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-muted-foreground">
+              <span>
+                原価 {formatForeign(t.original_amount, t.original_currency)}
+                {t.fx_rate && (
+                  <>
+                    {" "}・ {t.fx_status === "finalized" ? "=" : "≈"}{" "}
+                    <span className="font-mono">{t.fx_rate.toFixed(t.original_currency === "KRW" || t.original_currency === "IDR" || t.original_currency === "VND" ? 4 : 2)}</span>
+                    ¥/{t.original_currency}
+                  </>
+                )}
+              </span>
+              {t.fx_status === "pending" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettleFx();
+                  }}
+                  className="chip text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 border border-amber-500/30 hover:bg-amber-500/25"
+                >
+                  未確定
+                </button>
+              )}
+              {t.fx_status === "finalized" && (
+                <span className="chip text-[10px] px-1.5 py-0 bg-success/10 text-success border border-success/30">
+                  確定
+                </span>
+              )}
             </div>
           )}
         </div>

@@ -41,7 +41,7 @@ export default async function ReconcileDetailPage({ params }: { params: { import
       .order("date", { ascending: true }),
     sb
       .from("transactions")
-      .select("id, date, amount, note, user_id, category_type, category_id, payment_method_id, statement_row_id")
+      .select("id, date, amount, note, user_id, category_type, category_id, payment_method_id, statement_row_id, fx_status, original_currency, original_amount")
       .eq("household_id", hid)
       .eq("payment_method_id", imp.payment_method_id)
       .gte("date", shiftDays(periodStart, -7))
@@ -107,6 +107,9 @@ interface TxnRow {
   category_id: string | null;
   payment_method_id: string | null;
   statement_row_id: string | null;
+  fx_status: "pending" | "finalized" | null;
+  original_currency: string | null;
+  original_amount: number | null;
 }
 
 export type { ImportRow, StagingRow, TxnRow };

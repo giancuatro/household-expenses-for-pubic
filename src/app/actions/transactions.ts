@@ -26,6 +26,17 @@ const TxnSchema = z.object({
   note: z.string().max(1000).nullable().optional(),
   is_advance_payment: z.boolean().optional(),
   payment_method_id: z.string().uuid().nullable().optional(),
+  /**
+   * Phase 7 — Travel mode. When original_currency is set, all four FX columns
+   * are persisted together and `amount` is overwritten with
+   * round(original_amount * fx_rate) on the server (client estimates are not
+   * trusted). The row enters `fx_status='pending'` until the card statement
+   * import finalizes it.
+   */
+  original_amount: z.number().positive().nullable().optional(),
+  original_currency: z.string().min(2).max(8).nullable().optional(),
+  fx_rate: z.number().positive().nullable().optional(),
+  trip_id: z.string().uuid().nullable().optional(),
 });
 
 export async function upsertTransaction(input: z.infer<typeof TxnSchema>) {
@@ -33,13 +44,27 @@ export async function upsertTransaction(input: z.infer<typeof TxnSchema>) {
   const hid = household.household_id;
   const parsed = TxnSchema.parse(input);
   const sb = getSupabaseServer();
-  if (parsed.amount <= 0) throw new Error("金額は1円以上で入力してください。");
 
-  const row = {
+  // Decide whether this is a foreign-currency entry. All three FX inputs
+  // must be present together; otherwise we strip them and treat as pure JPY.
+  const hasFx =
+    !!parsed.original_currency &&
+    parsed.original_amount != null &&
+    parsed.fx_rate != null;
+  if (parsed.original_currency && !hasFx) {
+    throw new Error("外貨入力には original_amount と fx_rate が必須です。");
+  }
+
+  const finalAmount = hasFx
+    ? Math.max(1, Math.round((parsed.original_amount as number) * (parsed.fx_rate as number)))
+    : parsed.amount;
+  if (finalAmount <= 0) throw new Error("金額は1円以上で入力してください。");
+
+  const row: Record<string, unknown> = {
     household_id: hid,
     date: parsed.date,
     user_id: parsed.user_id,
-    amount: parsed.amount,
+    amount: finalAmount,
     category_type: parsed.category_type as TxnKind,
     category_id: parsed.category_id ?? null,
     subcategory: parsed.subcategory ?? null,
@@ -47,6 +72,11 @@ export async function upsertTransaction(input: z.infer<typeof TxnSchema>) {
     is_advance_payment: parsed.is_advance_payment ?? false,
     payment_method_id: parsed.payment_method_id ?? null,
     source: "manual",
+    original_amount: hasFx ? parsed.original_amount : null,
+    original_currency: hasFx ? (parsed.original_currency as string).toUpperCase() : null,
+    fx_rate: hasFx ? parsed.fx_rate : null,
+    fx_status: hasFx ? "pending" : null,
+    trip_id: parsed.trip_id ?? null,
   };
 
   let prevYm: string | null = null;
@@ -223,6 +253,63 @@ export async function toggleAdvanceSettled(
 function todayIsoLocal(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/* -------------------- FX settlement (travel mode) -------------------- */
+
+const FxSettleSchema = z
+  .object({
+    id: z.string().uuid(),
+    fxRate: z.number().positive().max(100_000).optional(),
+    jpyAmount: z.number().int().positive().optional(),
+  })
+  .refine(
+    (v) => v.fxRate !== undefined || v.jpyAmount !== undefined,
+    "fxRate か jpyAmount のどちらかを指定してください。",
+  );
+
+/**
+ * Finalize a pending FX transaction. The user provides EITHER the real
+ * fx_rate (preferred when they read it off a statement) OR the real JPY
+ * amount (preferred when the statement only shows the converted total).
+ * The other field is back-computed so both columns stay consistent.
+ */
+export async function settleTransactionFx(input: z.infer<typeof FxSettleSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const parsed = FxSettleSchema.parse(input);
+  const sb = getSupabaseServer();
+
+  const { data: row } = await sb
+    .from("transactions")
+    .select("date, original_amount, original_currency, fx_status")
+    .eq("household_id", hid)
+    .eq("id", parsed.id)
+    .single();
+  if (!row) throw new Error("取引が見つかりません。");
+  if (!row.original_amount || !row.original_currency) {
+    throw new Error("この取引は外貨情報を持っていません。");
+  }
+
+  let jpy: number;
+  let rate: number;
+  if (parsed.jpyAmount !== undefined) {
+    jpy = parsed.jpyAmount;
+    rate = parsed.jpyAmount / (row.original_amount as number);
+  } else {
+    rate = parsed.fxRate as number;
+    jpy = Math.max(1, Math.round((row.original_amount as number) * rate));
+  }
+
+  const { error } = await sb
+    .from("transactions")
+    .update({ amount: jpy, fx_rate: rate, fx_status: "finalized" })
+    .eq("household_id", hid)
+    .eq("id", parsed.id);
+  if (error) throw new Error(error.message);
+
+  revalidateTag(`hh:${hid}:txn:${ymOf(row.date as string)}`);
+  revalidateTag(`hh:${hid}:transactions`);
 }
 
 /* -------------------- Split (group bill) creation -------------------- */
