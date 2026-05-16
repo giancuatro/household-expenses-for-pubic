@@ -205,6 +205,7 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     date: r.date,
     amount: r.amount,
     merchant: r.merchant,
+    cardholder: r.cardholder ?? null,
     status: "unmatched",
   }));
   for (let i = 0; i < stagingRows.length; i += 500) {
@@ -643,6 +644,108 @@ export async function archiveImport(importId: string) {
 /* ---------------------------------------------------------------------- */
 /*  bulkAcceptHighConfidence                                               */
 /* ---------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------- */
+/*  bulkCreateFamilyCard                                                   */
+/*                                                                         */
+/*  Family-card rows in a Japanese card statement are always the spouse's  */
+/*  personal expense in this household's convention. Rather than make the  */
+/*  user click "+ 家計簿に追加" on every unmatched 家族 row, this batches    */
+/*  the creation: every unmatched-and-tagged staging row becomes a         */
+/*  transactions row with (user_id=family_default, category_type=personal) */
+/*  in one round-trip.                                                     */
+/* ---------------------------------------------------------------------- */
+
+const BulkFamilySchema = z.object({
+  importId: z.string().uuid(),
+  user_id: z.string().uuid(),
+});
+
+export async function bulkCreateFamilyCard(
+  input: z.infer<typeof BulkFamilySchema>,
+): Promise<{ created: number; importDeleted: boolean }> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const { importId, user_id } = BulkFamilySchema.parse(input);
+  const sb = getSupabaseServer();
+
+  const { data: imp } = await sb
+    .from("card_statement_imports")
+    .select("payment_method_id")
+    .eq("household_id", hid)
+    .eq("id", importId)
+    .single();
+  if (!imp) throw new Error("インポートが見つかりません。");
+
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, date, amount, merchant, match_group_id")
+    .eq("household_id", hid)
+    .eq("import_id", importId)
+    .eq("status", "unmatched")
+    .eq("cardholder", "family");
+  const rows = (rowsRaw ?? []) as Array<{
+    id: string;
+    date: string;
+    amount: number;
+    merchant: string | null;
+    match_group_id: string | null;
+  }>;
+  if (rows.length === 0) {
+    return { created: 0, importDeleted: false };
+  }
+
+  let created = 0;
+  const monthsTouched = new Set<string>();
+  for (const r of rows) {
+    if (r.match_group_id) {
+      await sb
+        .from("staging_card_transactions")
+        .update({
+          matched_transaction_id: null,
+          match_confidence: null,
+          match_group_id: null,
+          status: "unmatched",
+        })
+        .eq("household_id", hid)
+        .eq("match_group_id", r.match_group_id)
+        .neq("id", r.id);
+    }
+    const txnId = randomUUID();
+    const { error: insErr } = await sb.from("transactions").insert({
+      id: txnId,
+      household_id: hid,
+      date: r.date,
+      user_id,
+      amount: r.amount,
+      category_type: "personal",
+      category_id: null,
+      note: r.merchant ?? null,
+      payment_method_id: imp.payment_method_id,
+      source: "card-import",
+      statement_row_id: r.id,
+    });
+    if (insErr) throw new Error(`家族カード一括登録の失敗: ${insErr.message}`);
+    const { error: updErr } = await sb
+      .from("staging_card_transactions")
+      .update({
+        matched_transaction_id: txnId,
+        status: "created",
+        match_confidence: 100,
+      })
+      .eq("household_id", hid)
+      .eq("id", r.id);
+    if (updErr) throw new Error(updErr.message);
+    monthsTouched.add(monthKey(new Date(r.date + "T00:00:00")));
+    created++;
+  }
+
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
+  for (const ym of monthsTouched) revalidateTag(`hh:${hid}:txn:${ym}`);
+  revalidateTag(`hh:${hid}:transactions`);
+  revalidateTag(`hh:${hid}:reconcile`);
+  return { created, importDeleted };
+}
 
 export async function bulkAcceptHighConfidence(
   input: { importId: string; minConfidence: number },

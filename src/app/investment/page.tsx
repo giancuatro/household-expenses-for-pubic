@@ -1,7 +1,7 @@
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { listUsers } from "@/lib/queries";
 import { requireSession } from "@/lib/auth";
-import { fetchLivePrices, type LivePrice } from "@/lib/stockPrice";
+import { fetchLivePricesWithTimeout, type LivePrice } from "@/lib/stockPrice";
 import InvestmentClient from "./InvestmentClient";
 import type { InvestmentHoldingRow } from "@/lib/types";
 
@@ -38,10 +38,11 @@ export default async function InvestmentPage() {
   const holdings = Array.from(latestHoldings.values());
 
   // Prefetch live prices on the server so the table renders with up-to-date
-  // values immediately — no client-side flash. Failures degrade gracefully
-  // (client will retry on mount).
+  // values immediately — no client-side flash. Bounded by a hard timeout so
+  // a slow Yahoo response can never stall first-byte time; whatever doesn't
+  // arrive in time is filled in by the client refresh on mount.
   const tickers = Array.from(new Set(holdings.map((h) => h.ticker)));
-  const priceMap = await fetchLivePrices(tickers);
+  const priceMap = await fetchLivePricesWithTimeout(tickers);
   const initialPrices: Record<string, LivePrice> = {};
   for (const [k, v] of priceMap.entries()) initialPrices[k] = v;
 

@@ -40,6 +40,16 @@ const AMOUNT_DENYLIST = [
   // Avoid latching onto running totals / fees that share the "金額" stem.
   /合計/, /累計/, /総額/, /手数料/, /ポイント/, /残高/, /balance/i, /total/i, /fee/i,
 ];
+const CARDHOLDER_KW = [
+  /ご利用者/, /^利用者$/, /カード利用者/, /会員区分/, /^区分$/, /cardholder/i,
+];
+
+function detectCardholderFromCell(cell: string | undefined): "primary" | "family" | null {
+  if (!cell) return null;
+  if (/(?:家族|配偶者|サブ|追加)/u.test(cell)) return "family";
+  if (/本人|メイン/u.test(cell)) return "primary";
+  return null;
+}
 
 function findColIndex(header: string[], allow: RegExp[], deny: RegExp[] = []): number {
   for (let i = 0; i < header.length; i++) {
@@ -89,6 +99,7 @@ function parseCsvAuto(body: string): ParseResult {
   const dateIdx = findColIndex(header, DATE_KW);
   const merIdx = findColIndex(header, MERCHANT_KW);
   const amtIdx = findColIndex(header, AMOUNT_KW, AMOUNT_DENYLIST);
+  const cardholderIdx = findColIndex(header, CARDHOLDER_KW);
   if (dateIdx < 0 || amtIdx < 0) {
     throw new Error("CSV のヘッダから日付列または金額列を特定できませんでした。");
   }
@@ -119,10 +130,14 @@ function parseCsvAuto(body: string): ParseResult {
     if (amount === 0) continue; // silent skip — likely an empty total row
     if (!minDate || date < minDate) minDate = date;
     if (!maxDate || date > maxDate) maxDate = date;
+    const cardholder = cardholderIdx >= 0
+      ? detectCardholderFromCell(cells[cardholderIdx])
+      : detectCardholderFromCell(merRaw);
     rows.push({
       date,
       amount,
       merchant: merRaw,
+      cardholder,
       raw: { date: dateRaw, amount: amtRaw, merchant: merRaw },
     });
   }

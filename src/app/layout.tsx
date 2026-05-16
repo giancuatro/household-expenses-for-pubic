@@ -10,6 +10,7 @@ import { TopNav } from "@/components/layout/TopNav";
 import { BottomTabNav } from "@/components/layout/BottomTabNav";
 import { SwRegister } from "@/components/SwRegister";
 import { Toaster } from "@/components/Toaster";
+import { PullToRefresh } from "@/components/PullToRefresh";
 
 export const metadata: Metadata = {
   title: "家計簿",
@@ -86,6 +87,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </a>
           </footer>
           {authed && <BottomTabNav />}
+          {authed && <PullToRefresh />}
           <Toaster />
           <SwRegister />
         </ThemeProvider>

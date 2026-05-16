@@ -86,6 +86,27 @@ function pickRowAmount(s: string): AmountCandidate | null {
  * actual a-z letters. Real refund merchants ("CRUISE AMERICA - CEN",
  * etc.) clear the threshold and pass through.
  */
+/**
+ * Detect whether a parsed row belongs to the primary cardholder or a family
+ * card. Most Japanese card statements stamp every detail line with one of:
+ *   本人   = primary
+ *   家族   = family member (any add-on card)
+ *   配偶者 = spouse (treated as family for our purposes)
+ *
+ * We scan both the merchant-side substring (compact strategy) and the full
+ * raw line (so split-col PDFs that put the marker further along still match).
+ * Returns null when the line has no explicit marker — the UI then defaults
+ * to "primary" without making a false assertion.
+ */
+function detectCardholder(...candidates: string[]): "primary" | "family" | null {
+  for (const c of candidates) {
+    if (!c) continue;
+    if (/(?:家族|配偶者)/u.test(c)) return "family";
+    if (/本人/u.test(c)) return "primary";
+  }
+  return null;
+}
+
 function looksLikeBankWithdrawal(merchant: string, amount: number): boolean {
   if (amount >= 0) return false;
   if (/[぀-ヿｦ-ﾟ]/.test(merchant)) return false;
@@ -148,7 +169,9 @@ function extractCompact(body: string): ParseResult {
     }
     if (!firstAmount) continue;
 
-    let merchant = merchantRaw.slice(0, firstAmount.start).trim()
+    const merchantBeforeAmount = merchantRaw.slice(0, firstAmount.start).trim();
+    const cardholder = detectCardholder(merchantBeforeAmount, line);
+    let merchant = merchantBeforeAmount
       .replace(/\s*(?:\d{1,2}回(?:払い)?|リボ(?:払い|変更)?|一括(?:払い)?|分割(?:払い|変更)?|ボ(?:\d+回|併用|月))\s*$/u, "")
       .replace(/\s*(?:本人|家族|配偶者)?\*?\s*$/u, "")
       .trim();
@@ -165,6 +188,7 @@ function extractCompact(body: string): ParseResult {
       date: iso,
       amount: firstAmount.amount,
       merchant,
+      cardholder,
       raw: { date: full, amount: firstAmount.raw, merchant },
     });
   }
@@ -269,12 +293,22 @@ function extractSplitCol(body: string): ParseResult {
       continue;
     }
 
+    // VIEW prints 本人/家族 either on the date line, the merchant line, or
+    // the wrap-tail line. Scan all three so we don't miss it.
+    const cardholder = detectCardholder(
+      merchant,
+      lines[i],
+      i + 1 < lines.length ? lines[i + 1] : "",
+      i - 1 >= 0 ? lines[i - 1] : "",
+    );
+
     if (!minDate || iso < minDate) minDate = iso;
     if (!maxDate || iso > maxDate) maxDate = iso;
     rows.push({
       date: iso,
       amount: amount.amount,
       merchant,
+      cardholder,
       raw: { date: `${yy} ${mo} ${d}`, amount: amount.raw, merchant },
     });
   }

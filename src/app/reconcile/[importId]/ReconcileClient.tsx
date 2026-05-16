@@ -6,6 +6,7 @@ import {
   acceptMatch,
   archiveImport,
   bulkAcceptHighConfidence,
+  bulkCreateFamilyCard,
   createTransactionFromCard,
   ignoreCardRow,
   rejectMatch,
@@ -51,7 +52,19 @@ export default function ReconcileClient({
   // strategy. Surface this so the user can see the learning happen.
   const fmtBanner = searchParams?.get("fmt") ?? null;
 
-  const pmName = paymentMethods.find((p) => p.id === importRow.payment_method_id)?.name ?? "(支払方法不明)";
+  const paymentMethod = paymentMethods.find((p) => p.id === importRow.payment_method_id);
+  const pmName = paymentMethod?.name ?? "(支払方法不明)";
+  // Default user for family-card rows: the household member who isn't the
+  // primary cardholder. Settings can override this later; until then we just
+  // pick "any user other than the card owner". For the typical 2-person
+  // household this is deterministic; for solo households there's no spouse
+  // and the default falls back to the only user available.
+  const familyDefaultUserId = useMemo(() => {
+    if (users.length === 0) return null;
+    const owner = paymentMethod?.user_id ?? null;
+    const other = users.find((u) => u.id !== owner);
+    return (other ?? users[0]).id;
+  }, [users, paymentMethod]);
 
   const txnById = useMemo(() => new Map(transactions.map((t) => [t.id, t])), [transactions]);
 
@@ -70,15 +83,18 @@ export default function ReconcileClient({
 
   // Derived counts for the summary bar.
   const stats = useMemo(() => {
-    let confirmed = 0, suggested = 0, unmatched = 0, created = 0, ignored = 0;
+    let confirmed = 0, suggested = 0, unmatched = 0, created = 0, ignored = 0, familyUnmatched = 0;
     for (const r of stagingRows) {
       if (r.status === "confirmed") confirmed++;
       else if (r.status === "suggested") suggested++;
-      else if (r.status === "unmatched") unmatched++;
+      else if (r.status === "unmatched") {
+        unmatched++;
+        if (r.cardholder === "family") familyUnmatched++;
+      }
       else if (r.status === "created") created++;
       else if (r.status === "ignored") ignored++;
     }
-    return { confirmed, suggested, unmatched, created, ignored };
+    return { confirmed, suggested, unmatched, created, ignored, familyUnmatched };
   }, [stagingRows]);
 
   // Transactions on this card+period that no card row claims = "余分" (orphan
@@ -160,6 +176,22 @@ export default function ReconcileClient({
           >
             候補を一括承認 (80+)
           </button>
+          {stats.familyUnmatched > 0 && familyDefaultUserId && (
+            <button
+              type="button"
+              className="btn-secondary text-sm"
+              disabled={pending}
+              onClick={withErr(() =>
+                bulkCreateFamilyCard({
+                  importId: importRow.id,
+                  user_id: familyDefaultUserId,
+                }),
+              )}
+              title="家族カードの未照合行をすべて妻の個人支出として登録します"
+            >
+              家族カード分を個人支出で登録 ({stats.familyUnmatched})
+            </button>
+          )}
           <button
             type="button"
             className="btn-secondary text-sm"
@@ -210,6 +242,7 @@ export default function ReconcileClient({
                 groupMembers={r.match_group_id ? groupSiblings.get(r.match_group_id) ?? null : null}
                 users={users}
                 categories={categories}
+                familyDefaultUserId={familyDefaultUserId}
                 pending={pending}
                 onAccept={withErr(() => acceptMatch({ stagingId: r.id }))}
                 onReject={withErr(() => rejectMatch({ stagingId: r.id }))}
@@ -274,7 +307,7 @@ function formatFormat(id: string): string {
 /* ---------------------------------------------------------------------- */
 
 function StagingTr({
-  row, txn, groupMembers, users, categories, pending,
+  row, txn, groupMembers, users, categories, familyDefaultUserId, pending,
   onAccept, onReject, onIgnore, onCreate,
 }: {
   row: StagingRow;
@@ -282,6 +315,7 @@ function StagingTr({
   groupMembers: StagingRow[] | null;
   users: UserRow[];
   categories: CategoryRow[];
+  familyDefaultUserId: string | null;
   pending: boolean;
   onAccept: () => void;
   onReject: () => void;
@@ -300,7 +334,19 @@ function StagingTr({
       <tr className="border-b border-border last:border-0 align-top">
         <td className="py-1 pr-2">{row.date}</td>
         <td className="py-1 pr-2 font-mono">¥{row.amount.toLocaleString()}</td>
-        <td className="py-1 pr-2 truncate max-w-[28ch]">{row.merchant || "—"}</td>
+        <td className="py-1 pr-2 max-w-[28ch]">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate">{row.merchant || "—"}</span>
+            {row.cardholder === "family" && (
+              <span
+                className="shrink-0 chip text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 border border-amber-500/30"
+                title="家族カードの利用です。妻の個人支出として既定登録されます。"
+              >
+                家族
+              </span>
+            )}
+          </div>
+        </td>
         <td className="py-1 pr-2">
           {txn ? (
             <div className="text-xs space-y-0.5">
@@ -368,6 +414,8 @@ function StagingTr({
               users={users}
               categories={categories}
               pending={pending}
+              defaultUserId={row.cardholder === "family" ? familyDefaultUserId : null}
+              defaultKind={row.cardholder === "family" ? "personal" : null}
               onSubmit={(p) => {
                 onCreate(p);
                 setCreating(false);
@@ -381,15 +429,17 @@ function StagingTr({
 }
 
 function CreateForm({
-  users, categories, pending, onSubmit,
+  users, categories, pending, defaultUserId, defaultKind, onSubmit,
 }: {
   users: UserRow[];
   categories: CategoryRow[];
   pending: boolean;
+  defaultUserId?: string | null;
+  defaultKind?: TxnKind | null;
   onSubmit: (p: { user_id: string; category_type: TxnKind; category_id: string | null }) => void;
 }) {
-  const [userId, setUserId] = useState(users[0]?.id ?? "");
-  const [kind, setKind] = useState<TxnKind>("variable");
+  const [userId, setUserId] = useState(defaultUserId ?? users[0]?.id ?? "");
+  const [kind, setKind] = useState<TxnKind>(defaultKind ?? "variable");
   const [categoryId, setCategoryId] = useState<string>("");
   const cats = categories.filter((c) =>
     kind === "personal" ? c.type === "personal" : c.type === "shared",
