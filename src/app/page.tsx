@@ -7,6 +7,7 @@ import {
   listPaymentMethods,
   listTransactionsForMonth,
   listUsers,
+  getActiveTrip,
 } from "@/lib/queries";
 import { addMonths, monthKey } from "@/lib/format";
 import { requireSession } from "@/lib/auth";
@@ -31,6 +32,7 @@ export default async function HomePage() {
     paymentMethods,
     cashSnapshots,
     kindColors,
+    activeTrip,
   ] = await Promise.all([
     listUsers(hid),
     listCategories(hid),
@@ -41,6 +43,7 @@ export default async function HomePage() {
     listPaymentMethods(hid).catch(() => []),
     listCashBalanceSnapshots(hid).catch(() => []),
     listKindColors(hid).catch(() => []),
+    getActiveTrip(hid).catch(() => null),
   ]);
 
   return (
@@ -54,6 +57,7 @@ export default async function HomePage() {
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
       kindColors={kindColors}
+      activeTrip={activeTrip}
       showOnboarding={showOnboarding}
       currentMonth={ym}
       defaultUserId={household.household.default_user_id}

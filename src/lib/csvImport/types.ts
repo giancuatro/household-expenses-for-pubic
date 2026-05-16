@@ -9,6 +9,12 @@ export interface ParsedRow {
   amount: number;
   /** Original merchant string (for display + alias learning). */
   merchant: string;
+  /**
+   * Which cardholder swiped this row, when the statement makes it explicit.
+   * Japanese card PDFs commonly stamp every line with 本人 / 家族 / 配偶者.
+   * NULL means the parser couldn't tell — treat as primary for defaults.
+   */
+  cardholder?: "primary" | "family" | null;
   /** Original cells / fragments kept verbatim so audit / re-parse can refer back. */
   raw: {
     date: string;

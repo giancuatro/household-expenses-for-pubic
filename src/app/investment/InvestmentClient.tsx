@@ -49,6 +49,18 @@ function holdingCostJpy(h: InvestmentHoldingRow): number {
   return Math.round((h.quantity * h.avg_cost_usd) / priceUnit * h.exchange_rate);
 }
 
+/** Human-readable elapsed time since `ts` in Japanese. */
+function formatRelativeTime(ts: number | null): string {
+  if (!ts) return "未取得";
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return `${diffSec}秒前`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}分前`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH}時間前`;
+  return `${Math.floor(diffH / 24)}日前`;
+}
+
 /** Format price with correct currency label. */
 function formatPrice(price: number, ticker: string, showPerUnit = false): string {
   const currency = getTickerCurrency(ticker);
@@ -76,6 +88,14 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
     return m;
   });
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Wall-clock timestamp of the last successful (full or partial) price refresh.
+  // Initialized to "now" when SSR supplied prices since those were just fetched
+  // server-side; falsy otherwise so the indicator shows "未取得" until the first
+  // client fetch completes.
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(() =>
+    initialPrices && Object.keys(initialPrices).length > 0 ? Date.now() : null,
+  );
+  const [, forceTick] = useState(0);
 
   /* Selection mode state for trade history */
   const [selectMode, setSelectMode] = useState(false);
@@ -298,6 +318,7 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
       }
     }
     setPriceMap(newMap);
+    if (ok > 0) setLastUpdatedAt(Date.now());
     setBulkUpdating(false);
     if (fail > 0) setErr(`${ok} 銘柄更新 / ${fail} 失敗`);
   }, []); // stable — reads fresh data via holdingsRef
@@ -316,10 +337,41 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
     };
   }, [bulkUpdatePrices, initialPrices]);
 
+  /* Pull-to-refresh wiring: when the user pulls down on this tab we want the
+   * live prices to update immediately, not just the server-rendered data. */
+  useEffect(() => {
+    const onRefresh = () => bulkUpdatePrices();
+    window.addEventListener("app:refresh", onRefresh);
+    return () => window.removeEventListener("app:refresh", onRefresh);
+  }, [bulkUpdatePrices]);
+
+  /* Re-render every 5s so the "last updated N seconds ago" label stays
+   * accurate without forcing every other piece of UI to re-render. */
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => (n + 1) % 1_000_000), 5000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-xl font-bold">投資管理</h1>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span aria-live="polite">
+            {bulkUpdating
+              ? "株価取得中..."
+              : `最終更新: ${formatRelativeTime(lastUpdatedAt)}`}
+          </span>
+          <button
+            type="button"
+            className="btn-ghost text-xs px-2 py-1"
+            disabled={bulkUpdating}
+            onClick={bulkUpdatePrices}
+            aria-label="株価を更新"
+          >
+            ↻
+          </button>
+        </div>
       </div>
 
       {/* Summary */}

@@ -89,6 +89,28 @@ export interface TransactionRow {
   source_ref: string | null;
   /** Phase 3+: which payment method funded this transaction. NULL = legacy/未分類 (treated as 現金). */
   payment_method_id: string | null;
+  /**
+   * Phase 7 — Travel mode. When non-null, this row was entered in a foreign
+   * currency; `amount` (JPY) is the estimate until `fx_status='finalized'`.
+   * All four columns travel together; pure-JPY rows leave them NULL.
+   */
+  original_amount: number | null;
+  original_currency: string | null;
+  fx_rate: number | null;
+  fx_status: "pending" | "finalized" | null;
+  trip_id: string | null;
+  created_at: string;
+}
+
+/** Phase 7 — Travel session that pins (currency, est_rate) for entries during a trip. */
+export interface TripRow {
+  id: string;
+  name: string;
+  default_currency: string;
+  est_rate: number;
+  started_at: string;
+  /** NULL = trip is still active. */
+  ended_at: string | null;
   created_at: string;
 }
 

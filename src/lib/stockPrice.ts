@@ -42,6 +42,32 @@ export async function fetchLivePrices(tickers: string[]): Promise<Map<string, Li
   return out;
 }
 
+/**
+ * SSR-friendly variant: never blocks the page render for more than `timeoutMs`.
+ *
+ * Pages that show live prices used to await `fetchLivePrices` directly, which
+ * meant a slow Yahoo response could stretch first-byte time on the dashboard
+ * or investment tab by many seconds (especially the first request after a
+ * cold start, before the Next.js fetch cache is warm). Now we race the price
+ * fetch against a timeout — whatever has arrived by the deadline is returned,
+ * the rest is filled in by the client-side refresh that already runs on mount.
+ *
+ * The default 1200ms balances "users notice anything over 1s" against giving
+ * the cached path enough time to return so we don't degrade to client-only
+ * fetching every single navigation.
+ */
+export async function fetchLivePricesWithTimeout(
+  tickers: string[],
+  timeoutMs = 1200,
+): Promise<Map<string, LivePrice>> {
+  const empty = new Map<string, LivePrice>();
+  if (tickers.length === 0) return empty;
+  const timeout = new Promise<Map<string, LivePrice>>((resolve) =>
+    setTimeout(() => resolve(empty), timeoutMs),
+  );
+  return Promise.race([fetchLivePrices(tickers), timeout]);
+}
+
 async function fetchYahooChart(
   ticker: string,
   yahooTicker: string,

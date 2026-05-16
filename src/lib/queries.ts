@@ -10,6 +10,7 @@ import type {
   PaymentMethodRow,
   CashBalanceSnapshotRow,
   KindColorRow,
+  TripRow,
 } from "./types";
 
 /**
@@ -222,4 +223,59 @@ export async function listAllTransactions(hid: string): Promise<TransactionRow[]
     tags: [`hh:${hid}:transactions`, `hh:${hid}`],
     revalidate: 60,
   })();
+}
+
+/* ========== Travel mode (Phase 7) ========== */
+
+async function _listTrips(hid: string): Promise<TripRow[]> {
+  const sb = getSupabaseAdmin();
+  // Active trip(s) first (ended_at NULL), then most recent.
+  const { data, error } = await sb
+    .from("trips")
+    .select("*")
+    .eq("household_id", hid)
+    .order("ended_at", { ascending: true, nullsFirst: true })
+    .order("started_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as TripRow[];
+}
+
+export async function listTrips(hid: string): Promise<TripRow[]> {
+  return unstable_cache(() => _listTrips(hid), ["trips", hid], {
+    tags: [`hh:${hid}:trips`, `hh:${hid}`],
+    revalidate: 60,
+  })();
+}
+
+/**
+ * Active trip = most recent row with `ended_at IS NULL`. The home entry form
+ * uses this to decide whether to render the foreign-currency input. Multiple
+ * active trips are not expected (the start action enforces single-active),
+ * but if one slipped in we pick the latest started_at.
+ */
+export async function getActiveTrip(hid: string): Promise<TripRow | null> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("trips")
+    .select("*")
+    .eq("household_id", hid)
+    .is("ended_at", null)
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as TripRow | null) ?? null;
+}
+
+/** Pending-FX transactions across all time (drives the dashboard banner). */
+export async function listPendingFxTransactions(hid: string): Promise<TransactionRow[]> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("transactions")
+    .select("*")
+    .eq("household_id", hid)
+    .eq("fx_status", "pending")
+    .order("date", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as TransactionRow[];
 }

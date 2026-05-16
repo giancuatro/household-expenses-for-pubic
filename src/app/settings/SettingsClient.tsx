@@ -10,6 +10,7 @@ import type {
   PaymentMethodRow,
   CashBalanceSnapshotRow,
   KindColorRow,
+  TripRow,
 } from "@/lib/types";
 import { yen, monthKey, todayIso } from "@/lib/format";
 import { formatDayOfMonth } from "@/lib/paymentSchedule";
@@ -43,6 +44,7 @@ import {
   type InvitationRow,
 } from "../actions/settings";
 import { createAccount, deleteAccount } from "../actions/investment";
+import { TripSection } from "./components/TripSection";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MoneyInput } from "@/components/ui/MoneyInput";
 import { ColorPicker } from "@/components/ui/ColorPicker";
@@ -66,6 +68,7 @@ export default function SettingsClient({
   paymentMethods,
   cashSnapshots,
   kindColors,
+  trips,
   household,
   memberships,
 }: {
@@ -76,6 +79,7 @@ export default function SettingsClient({
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
   kindColors: KindColorRow[];
+  trips: TripRow[];
   household: HouseholdMembership;
   memberships: HouseholdMembership[];
 }) {
@@ -94,6 +98,7 @@ export default function SettingsClient({
     "payments",
     "cash",
     "accounts",
+    "trips",
     "data",
   ] as const;
   const initialTab = (() => {
@@ -128,7 +133,7 @@ export default function SettingsClient({
       {err && <p className="text-sm text-destructive">{err}</p>}
 
       <Tabs value={tab} onValueChange={changeTab} className="w-full">
-        <TabsList className="w-full grid grid-cols-4 sm:grid-cols-8 h-auto">
+        <TabsList className="w-full grid grid-cols-3 sm:grid-cols-9 h-auto">
           <TabsTrigger value="household">世帯</TabsTrigger>
           <TabsTrigger value="users">メンバー</TabsTrigger>
           <TabsTrigger value="categories">カテゴリ・色</TabsTrigger>
@@ -136,6 +141,7 @@ export default function SettingsClient({
           <TabsTrigger value="payments">支払方法</TabsTrigger>
           <TabsTrigger value="cash">現金残高</TabsTrigger>
           <TabsTrigger value="accounts">証券口座</TabsTrigger>
+          <TabsTrigger value="trips">旅行</TabsTrigger>
           <TabsTrigger value="data">データ管理</TabsTrigger>
         </TabsList>
 
@@ -282,6 +288,10 @@ export default function SettingsClient({
             </ul>
             <AddAccountForm users={users} start={start} onError={setErr} pending={pending} />
           </section>
+        </TabsContent>
+
+        <TabsContent value="trips">
+          <TripSection trips={trips} />
         </TabsContent>
 
         <TabsContent value="data">

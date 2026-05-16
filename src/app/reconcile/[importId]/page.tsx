@@ -35,13 +35,13 @@ export default async function ReconcileDetailPage({ params }: { params: { import
   const [stagingRes, txnRes] = await Promise.all([
     sb
       .from("staging_card_transactions")
-      .select("id, raw_date, raw_amount, raw_merchant, date, amount, merchant, status, match_confidence, matched_transaction_id, match_group_id")
+      .select("id, raw_date, raw_amount, raw_merchant, date, amount, merchant, status, match_confidence, matched_transaction_id, match_group_id, cardholder")
       .eq("household_id", hid)
       .eq("import_id", params.importId)
       .order("date", { ascending: true }),
     sb
       .from("transactions")
-      .select("id, date, amount, note, user_id, category_type, category_id, payment_method_id, statement_row_id")
+      .select("id, date, amount, note, user_id, category_type, category_id, payment_method_id, statement_row_id, fx_status, original_currency, original_amount")
       .eq("household_id", hid)
       .eq("payment_method_id", imp.payment_method_id)
       .gte("date", shiftDays(periodStart, -7))
@@ -94,6 +94,7 @@ interface StagingRow {
   match_confidence: number | null;
   matched_transaction_id: string | null;
   match_group_id: string | null;
+  cardholder: "primary" | "family" | null;
 }
 
 interface TxnRow {
@@ -106,6 +107,9 @@ interface TxnRow {
   category_id: string | null;
   payment_method_id: string | null;
   statement_row_id: string | null;
+  fx_status: "pending" | "finalized" | null;
+  original_currency: string | null;
+  original_amount: number | null;
 }
 
 export type { ImportRow, StagingRow, TxnRow };

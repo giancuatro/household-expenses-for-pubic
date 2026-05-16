@@ -168,6 +168,11 @@ function projectFixedCostsForward(
         source: "fixed-auto",
         source_ref: ref,
         payment_method_id: m.payment_method_id,
+        original_amount: null,
+        original_currency: null,
+        fx_rate: null,
+        fx_status: null,
+        trip_id: null,
         created_at: new Date().toISOString(),
       });
     }

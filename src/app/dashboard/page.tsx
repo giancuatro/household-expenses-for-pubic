@@ -6,9 +6,10 @@ import {
   listPaymentMethods,
   listCashBalanceSnapshots,
   listFixedCostMasters,
+  listPendingFxTransactions,
 } from "@/lib/queries";
 import { requireSession } from "@/lib/auth";
-import { fetchLivePrices, type LivePrice } from "@/lib/stockPrice";
+import { fetchLivePricesWithTimeout, type LivePrice } from "@/lib/stockPrice";
 import DashboardClient from "./DashboardClient";
 import type { InvestmentHoldingRow, InvestmentTransactionRow } from "@/lib/types";
 
@@ -19,7 +20,7 @@ export default async function DashboardPage() {
   const hid = household.household_id;
   const sb = getSupabaseServer();
 
-  const [users, categories, txns, paymentMethods, cashSnapshots, fixedCostMasters, tradesRes, holdingsRes] =
+  const [users, categories, txns, paymentMethods, cashSnapshots, fixedCostMasters, pendingFx, tradesRes, holdingsRes] =
     await Promise.all([
       listUsers(hid),
       listCategories(hid),
@@ -27,6 +28,7 @@ export default async function DashboardPage() {
       listPaymentMethods(hid).catch(() => []),
       listCashBalanceSnapshots(hid).catch(() => []),
       listFixedCostMasters(hid).catch(() => []),
+      listPendingFxTransactions(hid).catch(() => []),
       sb
         .from("investment_transactions")
         .select("*")
@@ -39,6 +41,11 @@ export default async function DashboardPage() {
         .order("fetched_at", { ascending: false }),
     ]);
 
+  const pendingFxSummary = {
+    count: pendingFx.length,
+    totalEstimateJpy: pendingFx.reduce((s, t) => s + t.amount, 0),
+  };
+
   const latestHoldings = new Map<string, InvestmentHoldingRow>();
   for (const h of (holdingsRes.data ?? []) as InvestmentHoldingRow[]) {
     const key = `${h.account_id}::${h.ticker}`;
@@ -47,12 +54,12 @@ export default async function DashboardPage() {
   const holdings = Array.from(latestHoldings.values());
 
   // SSR-prefetch live prices using the same helper the investment tab uses.
-  // This guarantees the asset-trend chart's right edge agrees with the
-  // investment tab's headline total from the first paint, instead of waiting
-  // for a client-side fetch to populate.
+  // Bounded by a timeout — we'd rather show a slightly stale chart for one
+  // beat than block first-byte time on a slow upstream. The client refreshes
+  // on mount so any missing tickers fill in within ~1s after paint.
   const trades = (tradesRes.data ?? []) as InvestmentTransactionRow[];
   const tickers = Array.from(new Set([...holdings.map((h) => h.ticker), ...trades.map((t) => t.ticker)]));
-  const priceMap = await fetchLivePrices(tickers);
+  const priceMap = await fetchLivePricesWithTimeout(tickers);
   const initialPrices: Record<string, LivePrice> = {};
   for (const [k, v] of priceMap.entries()) initialPrices[k] = v;
 
@@ -67,6 +74,7 @@ export default async function DashboardPage() {
       holdings={holdings}
       trades={trades}
       initialPrices={initialPrices}
+      pendingFxSummary={pendingFxSummary}
     />
   );
 }

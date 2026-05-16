@@ -17,6 +17,7 @@ import {
 } from "@/lib/csvImport";
 import { findGroupMatches, reconcile, statusFromConfidence, type CandidateTxn, type CardRow } from "@/lib/reconcile/matcher";
 import { monthKey } from "@/lib/format";
+import { isPlausibleRate } from "@/lib/currencyList";
 import type { TxnKind } from "@/lib/types";
 
 /* ---------------------------------------------------------------------- */
@@ -205,6 +206,7 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     date: r.date,
     amount: r.amount,
     merchant: r.merchant,
+    cardholder: r.cardholder ?? null,
     status: "unmatched",
   }));
   for (let i = 0; i < stagingRows.length; i += 500) {
@@ -327,6 +329,83 @@ export async function runMatcher(importId: string): Promise<{ updated: number }>
       claimedTxns.add(v.matchedTxnId);
     }
     updated++;
+  }
+
+  // ─── Pass 1.5: foreign-currency (pending FX) matching. ──────────────
+  // The exact-amount Pass 1 can never match a pending FX row because its JPY
+  // amount is just an estimate. Here we look up unclaimed card rows against
+  // pending FX transactions on the same payment method within a ±5 day
+  // window, scoring by "is this implied rate plausible for the currency".
+  // Confidence is capped at 90 so it always lands as a suggestion (and the
+  // user accepts via the bulk button or per-row).
+  const remainingAfterPass1 = cardRows.filter((r) => !claimedCards.has(r.id));
+  if (remainingAfterPass1.length > 0) {
+    const { data: fxRaw } = await sb
+      .from("transactions")
+      .select("id, date, original_amount, original_currency, statement_row_id, trip_id")
+      .eq("household_id", hid)
+      .eq("payment_method_id", imp.payment_method_id)
+      .eq("fx_status", "pending")
+      .gte("date", shiftDays(widenedMin, -5))
+      .lte("date", shiftDays(widenedMax, 5));
+    const fxCandidates = ((fxRaw ?? []) as Array<{
+      id: string;
+      date: string;
+      original_amount: number | null;
+      original_currency: string | null;
+      statement_row_id: string | null;
+      trip_id: string | null;
+    }>).filter((t) => !t.statement_row_id && !claimedTxns.has(t.id));
+
+    // Pre-load trip est_rates so isPlausibleRate can widen for exotic currencies.
+    const tripIds = Array.from(new Set(fxCandidates.map((t) => t.trip_id).filter(Boolean) as string[]));
+    const tripRateById = new Map<string, number>();
+    if (tripIds.length > 0) {
+      const { data: trips } = await sb
+        .from("trips")
+        .select("id, est_rate")
+        .eq("household_id", hid)
+        .in("id", tripIds);
+      for (const t of (trips ?? []) as Array<{ id: string; est_rate: number }>) {
+        tripRateById.set(t.id, t.est_rate as number);
+      }
+    }
+
+    // Score every (card × fx-candidate) pair, then greedy-assign best first.
+    type FxPair = { cardId: string; txnId: string; score: number };
+    const fxPairs: FxPair[] = [];
+    for (const c of remainingAfterPass1) {
+      for (const t of fxCandidates) {
+        if (!t.original_amount || !t.original_currency) continue;
+        const tripRate = t.trip_id ? tripRateById.get(t.trip_id) : undefined;
+        if (!isPlausibleRate(c.amount, t.original_amount, t.original_currency, tripRate)) continue;
+        const days = Math.abs(
+          (Date.parse(c.date + "T00:00:00Z") - Date.parse(t.date + "T00:00:00Z")) / 86_400_000,
+        );
+        if (days > 5) continue;
+        // Base 90, drop a point per day so closer pairs win ties.
+        fxPairs.push({ cardId: c.id, txnId: t.id, score: Math.max(70, 90 - days) });
+      }
+    }
+    fxPairs.sort((a, b) => b.score - a.score);
+
+    for (const p of fxPairs) {
+      if (claimedCards.has(p.cardId) || claimedTxns.has(p.txnId)) continue;
+      const { error } = await sb
+        .from("staging_card_transactions")
+        .update({
+          matched_transaction_id: p.txnId,
+          match_confidence: p.score,
+          status: "suggested",
+          match_group_id: null,
+        })
+        .eq("household_id", hid)
+        .eq("id", p.cardId);
+      if (error) throw new Error(`FX マッチの保存に失敗: ${error.message}`);
+      claimedCards.add(p.cardId);
+      claimedTxns.add(p.txnId);
+      updated++;
+    }
   }
 
   // ─── Pass 2: group matching (1 transaction = N card rows). ──────────
@@ -465,9 +544,66 @@ export async function acceptMatch(input: z.infer<typeof RowIdSchema>): Promise<{
     .eq("household_id", hid)
     .eq("id", matchedTxnId);
 
+  // Auto-finalize pending FX: copy the card row's JPY into the txn and
+  // back-compute the actual fx_rate. The user got this behavior by
+  // accepting the suggestion, so we don't need a separate confirmation.
+  await finalizeFxIfPending(sb, hid, matchedTxnId, ids[0]);
+
+  const ym = await monthOfTxn(sb, hid, matchedTxnId);
+  if (ym) revalidateTag(`hh:${hid}:txn:${ym}`);
+  revalidateTag(`hh:${hid}:transactions`);
   const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
   revalidateTag(`hh:${hid}:reconcile`);
   return { importDeleted };
+}
+
+/**
+ * If the transaction is in `fx_status='pending'`, overwrite its JPY amount
+ * with the matched card row's amount and back-compute the actual fx_rate.
+ * No-op otherwise. Idempotent.
+ */
+async function finalizeFxIfPending(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  txnId: string,
+  stagingId: string,
+) {
+  const { data: txn } = await sb
+    .from("transactions")
+    .select("original_amount, fx_status")
+    .eq("household_id", hid)
+    .eq("id", txnId)
+    .single();
+  if (!txn || txn.fx_status !== "pending" || !txn.original_amount) return;
+  const { data: stage } = await sb
+    .from("staging_card_transactions")
+    .select("amount")
+    .eq("household_id", hid)
+    .eq("id", stagingId)
+    .single();
+  if (!stage) return;
+  const jpy = stage.amount as number;
+  const rate = jpy / (txn.original_amount as number);
+  await sb
+    .from("transactions")
+    .update({ amount: jpy, fx_rate: rate, fx_status: "finalized" })
+    .eq("household_id", hid)
+    .eq("id", txnId);
+}
+
+async function monthOfTxn(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  txnId: string,
+): Promise<string | null> {
+  const { data } = await sb
+    .from("transactions")
+    .select("date")
+    .eq("household_id", hid)
+    .eq("id", txnId)
+    .single();
+  if (!data?.date) return null;
+  return monthKey(new Date((data.date as string) + "T00:00:00"));
 }
 
 export async function rejectMatch(input: z.infer<typeof RowIdSchema>) {
@@ -644,6 +780,108 @@ export async function archiveImport(importId: string) {
 /*  bulkAcceptHighConfidence                                               */
 /* ---------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------- */
+/*  bulkCreateFamilyCard                                                   */
+/*                                                                         */
+/*  Family-card rows in a Japanese card statement are always the spouse's  */
+/*  personal expense in this household's convention. Rather than make the  */
+/*  user click "+ 家計簿に追加" on every unmatched 家族 row, this batches    */
+/*  the creation: every unmatched-and-tagged staging row becomes a         */
+/*  transactions row with (user_id=family_default, category_type=personal) */
+/*  in one round-trip.                                                     */
+/* ---------------------------------------------------------------------- */
+
+const BulkFamilySchema = z.object({
+  importId: z.string().uuid(),
+  user_id: z.string().uuid(),
+});
+
+export async function bulkCreateFamilyCard(
+  input: z.infer<typeof BulkFamilySchema>,
+): Promise<{ created: number; importDeleted: boolean }> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const { importId, user_id } = BulkFamilySchema.parse(input);
+  const sb = getSupabaseServer();
+
+  const { data: imp } = await sb
+    .from("card_statement_imports")
+    .select("payment_method_id")
+    .eq("household_id", hid)
+    .eq("id", importId)
+    .single();
+  if (!imp) throw new Error("インポートが見つかりません。");
+
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, date, amount, merchant, match_group_id")
+    .eq("household_id", hid)
+    .eq("import_id", importId)
+    .eq("status", "unmatched")
+    .eq("cardholder", "family");
+  const rows = (rowsRaw ?? []) as Array<{
+    id: string;
+    date: string;
+    amount: number;
+    merchant: string | null;
+    match_group_id: string | null;
+  }>;
+  if (rows.length === 0) {
+    return { created: 0, importDeleted: false };
+  }
+
+  let created = 0;
+  const monthsTouched = new Set<string>();
+  for (const r of rows) {
+    if (r.match_group_id) {
+      await sb
+        .from("staging_card_transactions")
+        .update({
+          matched_transaction_id: null,
+          match_confidence: null,
+          match_group_id: null,
+          status: "unmatched",
+        })
+        .eq("household_id", hid)
+        .eq("match_group_id", r.match_group_id)
+        .neq("id", r.id);
+    }
+    const txnId = randomUUID();
+    const { error: insErr } = await sb.from("transactions").insert({
+      id: txnId,
+      household_id: hid,
+      date: r.date,
+      user_id,
+      amount: r.amount,
+      category_type: "personal",
+      category_id: null,
+      note: r.merchant ?? null,
+      payment_method_id: imp.payment_method_id,
+      source: "card-import",
+      statement_row_id: r.id,
+    });
+    if (insErr) throw new Error(`家族カード一括登録の失敗: ${insErr.message}`);
+    const { error: updErr } = await sb
+      .from("staging_card_transactions")
+      .update({
+        matched_transaction_id: txnId,
+        status: "created",
+        match_confidence: 100,
+      })
+      .eq("household_id", hid)
+      .eq("id", r.id);
+    if (updErr) throw new Error(updErr.message);
+    monthsTouched.add(monthKey(new Date(r.date + "T00:00:00")));
+    created++;
+  }
+
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
+  for (const ym of monthsTouched) revalidateTag(`hh:${hid}:txn:${ym}`);
+  revalidateTag(`hh:${hid}:transactions`);
+  revalidateTag(`hh:${hid}:reconcile`);
+  return { created, importDeleted };
+}
+
 export async function bulkAcceptHighConfidence(
   input: { importId: string; minConfidence: number },
 ): Promise<{ confirmed: number; importDeleted: boolean }> {
@@ -680,6 +918,7 @@ export async function bulkAcceptHighConfidence(
   }
 
   let count = 0;
+  const monthsTouched = new Set<string>();
   for (const rep of reps) {
     // Reuse acceptMatch's logic by inlining: flips group + stamps txn.
     const { ids, matchedTxnId } = await resolveSiblingIds(sb, hid, rep.id);
@@ -696,9 +935,83 @@ export async function bulkAcceptHighConfidence(
       .eq("household_id", hid)
       .eq("id", matchedTxnId);
     if (e2) throw new Error(e2.message);
+    await finalizeFxIfPending(sb, hid, matchedTxnId, ids[0]);
+    const ym = await monthOfTxn(sb, hid, matchedTxnId);
+    if (ym) monthsTouched.add(ym);
     count += ids.length;
   }
+  for (const ym of monthsTouched) revalidateTag(`hh:${hid}:txn:${ym}`);
+  if (monthsTouched.size > 0) revalidateTag(`hh:${hid}:transactions`);
   const importDeleted = await maybeAutoDeleteImport(sb, hid, input.importId);
   revalidateTag(`hh:${hid}:reconcile`);
   return { confirmed: count, importDeleted };
+}
+
+/* ---------------------------------------------------------------------- */
+/*  bulkAcceptFxMatches                                                   */
+/*                                                                         */
+/*  Travel-mode helper: accept every staging row that matched a pending   */
+/*  FX transaction in Pass 1.5. Same path as bulkAcceptHighConfidence but */
+/*  filtered to suggestions whose matched txn is fx_status='pending'.     */
+/* ---------------------------------------------------------------------- */
+
+export async function bulkAcceptFxMatches(input: { importId: string }): Promise<{
+  finalized: number;
+  importDeleted: boolean;
+}> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, matched_transaction_id, match_group_id, status")
+    .eq("household_id", hid)
+    .eq("import_id", input.importId)
+    .eq("status", "suggested");
+  const rows = (rowsRaw ?? []) as Array<{
+    id: string;
+    matched_transaction_id: string | null;
+    match_group_id: string | null;
+  }>;
+  if (rows.length === 0) return { finalized: 0, importDeleted: false };
+
+  const txnIds = Array.from(new Set(rows.map((r) => r.matched_transaction_id).filter(Boolean) as string[]));
+  if (txnIds.length === 0) return { finalized: 0, importDeleted: false };
+  const { data: pendingTxns } = await sb
+    .from("transactions")
+    .select("id")
+    .eq("household_id", hid)
+    .in("id", txnIds)
+    .eq("fx_status", "pending");
+  const pendingSet = new Set(((pendingTxns ?? []) as Array<{ id: string }>).map((t) => t.id));
+
+  let finalized = 0;
+  const monthsTouched = new Set<string>();
+  for (const r of rows) {
+    if (!r.matched_transaction_id || !pendingSet.has(r.matched_transaction_id)) continue;
+    const { ids, matchedTxnId } = await resolveSiblingIds(sb, hid, r.id);
+    if (!matchedTxnId) continue;
+    const { error: e1 } = await sb
+      .from("staging_card_transactions")
+      .update({ status: "confirmed" })
+      .eq("household_id", hid)
+      .in("id", ids);
+    if (e1) throw new Error(e1.message);
+    const { error: e2 } = await sb
+      .from("transactions")
+      .update({ statement_row_id: ids[0] })
+      .eq("household_id", hid)
+      .eq("id", matchedTxnId);
+    if (e2) throw new Error(e2.message);
+    await finalizeFxIfPending(sb, hid, matchedTxnId, ids[0]);
+    const ym = await monthOfTxn(sb, hid, matchedTxnId);
+    if (ym) monthsTouched.add(ym);
+    finalized++;
+  }
+  for (const ym of monthsTouched) revalidateTag(`hh:${hid}:txn:${ym}`);
+  if (monthsTouched.size > 0) revalidateTag(`hh:${hid}:transactions`);
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, input.importId);
+  revalidateTag(`hh:${hid}:reconcile`);
+  return { finalized, importDeleted };
 }
