@@ -683,7 +683,7 @@ export async function createTransactionFromCard(
 
   const { data: staging } = await sb
     .from("staging_card_transactions")
-    .select("id, import_id, date, amount, merchant, status, match_group_id")
+    .select("id, import_id, date, amount, merchant, status, match_group_id, cardholder")
     .eq("household_id", hid)
     .eq("id", parsed.stagingId)
     .single();

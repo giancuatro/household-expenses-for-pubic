@@ -25,6 +25,8 @@ import {
   reorderCategories,
   upsertFixedCost,
   deleteFixedCost,
+  setFixedCostArchived,
+  mergeUsers,
   upsertPaymentMethod,
   deletePaymentMethod,
   setPaymentMethodArchived,
@@ -173,6 +175,9 @@ export default function SettingsClient({
               ))}
             </ul>
             <AddUserForm start={start} onError={setErr} pending={pending} />
+            {users.length >= 2 && (
+              <MergeUsersForm users={users} start={start} onError={setErr} pending={pending} />
+            )}
           </section>
         </TabsContent>
 
@@ -579,6 +584,62 @@ function AddUserForm({
   );
 }
 
+/**
+ * Merge one user's history into another (transactions, fixed costs, payment
+ * methods, investments). Use when the same person ended up with two payer
+ * rows — e.g. an old label "ひか" plus a new auth-linked label "ひかり" from
+ * the invite flow. The source row disappears after the merge.
+ */
+function MergeUsersForm({
+  users, start, onError, pending,
+}: {
+  users: UserRow[];
+  start: (fn: () => void) => void;
+  onError: (e: string | null) => void;
+  pending: boolean;
+}) {
+  const [fromId, setFromId] = useState(users[0]?.id ?? "");
+  const [toId, setToId] = useState(users[1]?.id ?? "");
+  return (
+    <form
+      className="mt-5 pt-4 border-t border-border space-y-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!fromId || !toId || fromId === toId) {
+          onError("統合元と統合先は別のユーザーを選んでください。");
+          return;
+        }
+        const fromName = users.find((u) => u.id === fromId)?.name ?? "?";
+        const toName = users.find((u) => u.id === toId)?.name ?? "?";
+        if (!confirm(`「${fromName}」のすべての取引・固定費・支払方法・投資を「${toName}」に統合します。\n統合後「${fromName}」は削除されます。よろしいですか？`)) return;
+        start(async () => {
+          onError(null);
+          try {
+            await mergeUsers({ from_user_id: fromId, to_user_id: toId });
+          } catch (err: unknown) {
+            onError(err instanceof Error ? err.message : String(err));
+          }
+        });
+      }}
+    >
+      <div className="text-sm font-medium">メンバー統合</div>
+      <p className="text-xs text-muted-foreground">
+        同じ人を表す2つのユーザー行があるとき、統合元のすべての履歴を統合先に集約してから統合元を削除します。
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto] gap-2 items-center">
+        <select className="input" value={fromId} onChange={(e) => setFromId(e.target.value)}>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}（統合元）</option>)}
+        </select>
+        <span className="text-center text-muted-foreground">→</span>
+        <select className="input" value={toId} onChange={(e) => setToId(e.target.value)}>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}（統合先）</option>)}
+        </select>
+        <button className="btn-secondary text-sm" disabled={pending}>統合</button>
+      </div>
+    </form>
+  );
+}
+
 /* -------------------- Categories -------------------- */
 function CategoryList({
   categories, colorMap, start, onError, pending,
@@ -784,10 +845,15 @@ function FixedCostItem({
 
   if (!editing) {
     return (
-      <li className="py-2 flex items-center gap-2 text-sm min-w-0">
+      <li className={`py-2 flex items-center gap-2 text-sm min-w-0 ${f.archived ? "opacity-60" : ""}`}>
         <span className="chip bg-muted text-xs shrink-0">{f.label}</span>
         <div className="flex-1 min-w-0">
-          <div className="font-medium truncate">{f.name}</div>
+          <div className="font-medium truncate flex items-center gap-2">
+            {f.name}
+            {f.archived && (
+              <span className="chip bg-muted text-[10px] shrink-0">停止中</span>
+            )}
+          </div>
           <div className="text-xs text-muted-foreground truncate">
             {users.find((u) => u.id === f.user_id)?.name ?? "共同"} · 開始 {f.valid_from.slice(0, 7)}
             {f.payment_day != null && ` · 毎月${f.payment_day}日`}
@@ -795,6 +861,15 @@ function FixedCostItem({
           </div>
         </div>
         <div className="text-right tabular-nums shrink-0 font-medium">{yen(f.amount)}</div>
+        <button
+          className="btn-ghost text-xs py-1 px-2 shrink-0"
+          disabled={pending}
+          title={f.archived ? "再開：来月以降の自動登録を再開" : "停止：来月以降の自動登録を止めるが、過去のデータは残す"}
+          onClick={() => start(async () => {
+            try { await setFixedCostArchived(f.id, !f.archived); }
+            catch (e: unknown) { onError(e instanceof Error ? e.message : String(e)); }
+          })}
+        >{f.archived ? "再開" : "停止"}</button>
         <button
           className="btn-ghost text-xs py-1 px-2 shrink-0"
           onClick={() => setEditing(true)}
@@ -1140,10 +1215,14 @@ function PaymentMethodItem({
   const [offset, setOffset] = useState<string>(method.payment_month_offset.toString());
   const [bank, setBank] = useState<string>(method.bank_account_label ?? "");
   const [userId, setUserId] = useState<string>(method.user_id ?? "");
+  const [familyCardUserId, setFamilyCardUserId] = useState<string>(method.family_card_user_id ?? "");
 
   const ownerName = method.user_id
     ? users.find((u) => u.id === method.user_id)?.name ?? "(不明)"
     : "共同";
+  const familyName = method.family_card_user_id
+    ? users.find((u) => u.id === method.family_card_user_id)?.name ?? null
+    : null;
 
   if (!editing) {
     return (
@@ -1167,6 +1246,7 @@ function PaymentMethodItem({
               </>
             )}
             {method.bank_account_label && ` · ${method.bank_account_label}`}
+            {familyName && ` · 家族カード→${familyName}`}
           </div>
         </div>
         <button
@@ -1264,6 +1344,23 @@ function PaymentMethodItem({
           </label>
         </div>
       )}
+      {method.type === "credit_card" && (
+        <label className="text-xs text-muted-foreground block">
+          家族カード利用者（明細の家族行をこの人の個人支出として記録）
+          <select
+            className="input mt-1"
+            value={familyCardUserId}
+            onChange={(e) => setFamilyCardUserId(e.target.value)}
+          >
+            <option value="">なし（本人のみ）</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <input
         className="input"
         value={bank}
@@ -1287,6 +1384,7 @@ function PaymentMethodItem({
                   payment_month_offset: offset ? Number(offset) : 1,
                   bank_account_label: bank || null,
                   display_order: method.display_order,
+                  family_card_user_id: familyCardUserId || null,
                 });
                 setEditing(false);
               } catch (e: unknown) {

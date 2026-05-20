@@ -114,6 +114,40 @@ function looksLikeBankWithdrawal(merchant: string, amount: number): boolean {
   return asciiLetters.length < 10;
 }
 
+/**
+ * pdf2json renders AMEX's Type3-encoded glyphs as garbage extended-Latin1
+ * runs ("ÏV5[ÎcË", "}|{ Ä=y", etc.). When such a run sits at the end of an
+ * otherwise readable merchant string, drop it — the readable head is the
+ * useful part. We DON'T touch merchants that are entirely garbled, because
+ * the user still needs to see *something* to recognize them in the UI.
+ */
+const GARBLED_TAIL_RE = /\s+[\x80-\xff#$%&'*+\-./0-9:;<=>?@A-Z\[\\\]_`a-z{|}~\s]{4,}$/;
+function trimGarbledTail(merchant: string): string {
+  if (!/[぀-ヿ一-鿿ｦ-ﾟ]/.test(merchant)) return merchant;
+  let m = merchant;
+  for (let i = 0; i < 3; i++) {
+    const next = m.replace(GARBLED_TAIL_RE, "").trim();
+    if (next === m) break;
+    m = next;
+  }
+  return m;
+}
+
+/**
+ * Collapse the wide-spaced kana pdf2json produces ("アマ    ゾ ン   シーオージ") into a
+ * readable run ("アマゾン シーオージ"). Whitespace flanked by kana/CJK on both
+ * sides is the layout artifact; spaces adjacent to ASCII (real word
+ * boundaries in mixed-script merchants) survive.
+ */
+function collapseKanaSpacing(merchant: string): string {
+  return merchant.replace(/(?<=[぀-ヿ一-鿿ｦ-ﾟ])[\s　]+(?=[぀-ヿ一-鿿ｦ-ﾟ])/g, "");
+}
+
+/** Apply both post-cleanup passes in the order designed to be safe. */
+function tidyMerchant(merchant: string): string {
+  return collapseKanaSpacing(trimGarbledTail(merchant)).trim();
+}
+
 // ─── strategy 1: compact (Rakuten / JCB / AMEX / 三井住友) ─────────────
 
 // Date at line start. Optional 4-digit year + single-char separator; then
@@ -175,6 +209,7 @@ function extractCompact(body: string): ParseResult {
       .replace(/\s*(?:\d{1,2}回(?:払い)?|リボ(?:払い|変更)?|一括(?:払い)?|分割(?:払い|変更)?|ボ(?:\d+回|併用|月))\s*$/u, "")
       .replace(/\s*(?:本人|家族|配偶者)?\*?\s*$/u, "")
       .trim();
+    merchant = tidyMerchant(merchant);
     if (!merchant) merchant = "(不明)";
 
     if (looksLikeBankWithdrawal(merchant, firstAmount.amount)) {
@@ -283,10 +318,11 @@ function extractSplitCol(body: string): ParseResult {
     const amount = pickRowAmount(rest);
     if (!amount) continue;
 
-    const merchant = findSplitMerchant(
+    const merchantRaw = findSplitMerchant(
       lines.map((l) => l.trim()), // findSplitMerchant operates on trimmed lines
       i,
     );
+    const merchant = tidyMerchant(merchantRaw) || merchantRaw;
 
     if (looksLikeBankWithdrawal(merchant, amount.amount)) {
       skipped.push({ line: i + 1, raw: lines[i], reason: "前月分の口座振替（カード取引ではない）" });
