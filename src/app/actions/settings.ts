@@ -112,11 +112,82 @@ export async function deleteUser(id: string) {
     .eq("household_id", hid)
     .eq("user_id", id);
   if ((count ?? 0) > 0) {
-    throw new Error("このユーザーには取引記録があるため削除できません。");
+    throw new Error("このユーザーには取引記録があるため削除できません。先に「統合」してください。");
   }
   const { error } = await sb.from("users").delete().eq("household_id", hid).eq("id", id);
   if (error) throw new Error(error.message);
   revalidateTag(`hh:${hid}:users`);
+}
+
+const MergeUserSchema = z.object({
+  from_user_id: z.string().uuid(),
+  to_user_id: z.string().uuid(),
+});
+
+/**
+ * Move every reference from one user-label row to another inside the same
+ * household, then delete the source. Use case: invite flow creates a fresh
+ * `users` row for the new auth user, but the household has been tracking
+ * spend against an older label — collapse them so the new authenticated
+ * member owns the history.
+ *
+ * RLS keeps the writes scoped: we never touch rows outside the active
+ * household, even with service-role bypass. The to_user must exist in the
+ * same household; from_user is the row that disappears.
+ */
+export async function mergeUsers(input: z.infer<typeof MergeUserSchema>): Promise<{ moved: Record<string, number> }> {
+  const { household } = await requireSession();
+  if (household.role !== "owner") throw new Error("メンバーの統合はオーナーのみ可能です。");
+  const p = MergeUserSchema.parse(input);
+  if (p.from_user_id === p.to_user_id) throw new Error("同じユーザーは統合できません。");
+  const hid = household.household_id;
+  const admin = getSupabaseAdmin();
+
+  const { data: both } = await admin
+    .from("users")
+    .select("id, name, auth_user_id")
+    .eq("household_id", hid)
+    .in("id", [p.from_user_id, p.to_user_id]);
+  const rows = (both ?? []) as { id: string; name: string; auth_user_id: string | null }[];
+  if (rows.length !== 2) throw new Error("統合元または統合先がこの世帯に存在しません。");
+
+  const moved: Record<string, number> = {};
+  const move = async (table: string) => {
+    const { data, error } = await admin
+      .from(table)
+      .update({ user_id: p.to_user_id })
+      .eq("household_id", hid)
+      .eq("user_id", p.from_user_id)
+      .select("id");
+    if (error) throw new Error(`${table}: ${error.message}`);
+    moved[table] = data?.length ?? 0;
+  };
+  await move("transactions");
+  await move("fixed_cost_masters");
+  await move("payment_methods");
+  await move("investment_accounts");
+  await move("investment_transactions");
+
+  // Households can also point at a default user. Re-link if it was the merged-away row.
+  await admin
+    .from("households")
+    .update({ default_user_id: p.to_user_id })
+    .eq("id", hid)
+    .eq("default_user_id", p.from_user_id);
+
+  const { error: delErr } = await admin
+    .from("users")
+    .delete()
+    .eq("household_id", hid)
+    .eq("id", p.from_user_id);
+  if (delErr) throw new Error(`users: ${delErr.message}`);
+
+  revalidateTag(`hh:${hid}:users`);
+  revalidateTag(`hh:${hid}:transactions`);
+  revalidateTag(`hh:${hid}:fixed-cost-masters`);
+  revalidateTag(`hh:${hid}:payment-methods`);
+  revalidateTag(`hh:${hid}:investment-accounts`);
+  return { moved };
 }
 
 /* -------------------- Categories -------------------- */
@@ -290,6 +361,27 @@ export async function deleteFixedCost(id: string) {
   revalidateTag(`hh:${hid}:fixed-cost-masters`);
 }
 
+export async function setFixedCostArchived(id: string, archived: boolean) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+  const { error } = await sb
+    .from("fixed_cost_masters")
+    .update({ archived })
+    .eq("household_id", hid)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  // Archiving wipes upcoming auto-tx for this master so the cash-flow chart
+  // and transactions list both stop showing it within seconds, not a month.
+  try {
+    await regenerateFixedCostForMaster(hid, id, 2);
+  } catch (e) {
+    console.error("regenerateFixedCostForMaster (archive) failed:", e);
+  }
+  revalidateTag(`hh:${hid}:fixed-cost-masters`);
+  revalidateTag(`hh:${hid}:transactions`);
+}
+
 /* -------------------- Payment methods -------------------- */
 const PaymentMethodSchema = z.object({
   id: z.string().uuid().optional(),
@@ -301,6 +393,7 @@ const PaymentMethodSchema = z.object({
   payment_month_offset: z.number().int().min(0).max(6).default(1),
   bank_account_label: z.string().max(40).nullable().optional(),
   display_order: z.number().int().default(0),
+  family_card_user_id: z.string().uuid().nullable().optional(),
 });
 
 export async function upsertPaymentMethod(input: z.infer<typeof PaymentMethodSchema>) {
@@ -318,6 +411,7 @@ export async function upsertPaymentMethod(input: z.infer<typeof PaymentMethodSch
     payment_month_offset: p.type === "credit_card" ? p.payment_month_offset : 0,
     bank_account_label: p.bank_account_label ?? null,
     display_order: p.display_order,
+    family_card_user_id: p.type === "credit_card" ? p.family_card_user_id ?? null : null,
   };
   if (p.id) {
     const { error } = await sb

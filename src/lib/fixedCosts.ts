@@ -30,6 +30,7 @@ export async function applyFixedCostsForMonth(hid: string, ym: string = monthKey
     .from("fixed_cost_masters")
     .select("*")
     .eq("household_id", hid)
+    .eq("archived", false)
     .lte("valid_from", monthStart)
     .order("valid_from", { ascending: false });
 
@@ -51,19 +52,31 @@ export async function applyFixedCostsForMonth(hid: string, ym: string = monthKey
   const fallbackUserId = anyUser?.id as string | undefined;
   if (!fallbackUserId) return { inserted: 0 };
 
-  const rows = Array.from(latest.values()).map((m) => ({
-    household_id: hid,
-    date: txDateForCycle(ym, m.payment_day, cycleStart),
-    user_id: m.user_id ?? fallbackUserId,
-    amount: m.amount,
-    category_type: m.label === "ローン" ? "loan" : "fixed",
-    category_id: null,
-    subcategory: m.name,
-    note: m.label,
-    source: "fixed-auto",
-    source_ref: `fixed:${m.id}:${ym}`,
-    payment_method_id: m.payment_method_id ?? null,
-  }));
+  const candidateRefs = Array.from(latest.values()).map((m) => `fixed:${m.id}:${ym}`);
+  const { data: dismissedRows } = await sb
+    .from("fixed_cost_dismissals")
+    .select("source_ref")
+    .eq("household_id", hid)
+    .in("source_ref", candidateRefs);
+  const dismissed = new Set(((dismissedRows ?? []) as { source_ref: string }[]).map((r) => r.source_ref));
+
+  const rows = Array.from(latest.values())
+    .filter((m) => !dismissed.has(`fixed:${m.id}:${ym}`))
+    .map((m) => ({
+      household_id: hid,
+      date: txDateForCycle(ym, m.payment_day, cycleStart),
+      user_id: m.user_id ?? fallbackUserId,
+      amount: m.amount,
+      category_type: m.label === "ローン" ? "loan" : "fixed",
+      category_id: null,
+      subcategory: m.name,
+      note: m.label,
+      source: "fixed-auto",
+      source_ref: `fixed:${m.id}:${ym}`,
+      payment_method_id: m.payment_method_id ?? null,
+    }));
+
+  if (rows.length === 0) return { inserted: 0 };
 
   const { error: insErr, count } = await sb
     .from("transactions")
@@ -105,6 +118,7 @@ export async function regenerateFixedCostForMaster(hid: string, masterId: string
   for (let i = 0; i <= forward; i++) cycles.push(addMonths(current, i));
 
   const sourceRefs = cycles.map((ym) => `fixed:${masterId}:${ym}`);
+
   const { error: delErr } = await sb
     .from("transactions")
     .delete()
@@ -112,6 +126,17 @@ export async function regenerateFixedCostForMaster(hid: string, masterId: string
     .eq("source", "fixed-auto")
     .in("source_ref", sourceRefs);
   if (delErr) throw new Error(`fixed-cost regen delete: ${delErr.message}`);
+
+  // The after-delete trigger writes dismissals for the rows we just removed.
+  // Clear them now — `regenerateFixedCostForMaster` is the explicit "rewrite"
+  // path, so the user's intent is to re-create these rows, not suppress them.
+  await sb
+    .from("fixed_cost_dismissals")
+    .delete()
+    .eq("household_id", hid)
+    .in("source_ref", sourceRefs);
+
+  if (m.archived) return;
 
   const { data: anyUser } = await sb
     .from("users")

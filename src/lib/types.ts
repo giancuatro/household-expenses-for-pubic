@@ -62,6 +62,8 @@ export interface FixedCostMasterRow {
   payment_method_id: string | null;
   /** Phase 4.1: day-of-month the cost actually leaves the bank (1..31). NULL = legacy (cycle-start). */
   payment_day: number | null;
+  /** Phase 5: paused without delete. The cron skips archived rows. */
+  archived: boolean;
 }
 
 export interface CashBalanceSnapshotRow {
@@ -130,6 +132,12 @@ export interface PaymentMethodRow {
   bank_account_label: string | null;
   display_order: number;
   archived: boolean;
+  /**
+   * Phase 5: family-card pinning. If set, transactions imported from this
+   * card whose `cardholder` looks like the family member's name (or "家族")
+   * default to this user_id rather than the cardholder of record.
+   */
+  family_card_user_id: string | null;
 }
 
 export interface InvestmentAccountRow {

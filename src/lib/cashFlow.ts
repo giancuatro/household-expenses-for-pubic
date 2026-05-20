@@ -145,6 +145,7 @@ function projectFixedCostsForward(
   // Look up to 4 cycles forward — enough to cover a 60-day projection regardless
   // of where today sits in the cycle.
   for (const m of masters) {
+    if (m.archived) continue;
     for (let i = 0; i < 4; i++) {
       const ym = addMonths(currentYm, i);
       if (m.valid_from > firstOfMonth(ym)) continue;
