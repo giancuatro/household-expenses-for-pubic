@@ -3,6 +3,8 @@ import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { listAllPaymentMethods, listCategories, listUsers } from "@/lib/queries";
+import { getAliasSuggestionsForImport, getDuplicateWarnings } from "@/app/actions/reconcile";
+import type { AliasValue } from "@/lib/reconcile/merchantAlias";
 import ReconcileClient from "./ReconcileClient";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +34,7 @@ export default async function ReconcileDetailPage({ params }: { params: { import
   const periodStart = (imp.period_start as string | null) ?? "1970-01-01";
   const periodEnd = (imp.period_end as string | null) ?? "9999-12-31";
 
-  const [stagingRes, txnRes] = await Promise.all([
+  const [stagingRes, txnRes, aliasSuggestions, duplicateWarnings] = await Promise.all([
     sb
       .from("staging_card_transactions")
       .select("id, raw_date, raw_amount, raw_merchant, date, amount, merchant, status, match_confidence, matched_transaction_id, match_group_id, cardholder")
@@ -46,6 +48,8 @@ export default async function ReconcileDetailPage({ params }: { params: { import
       .eq("payment_method_id", imp.payment_method_id)
       .gte("date", shiftDays(periodStart, -7))
       .lte("date", shiftDays(periodEnd, 7)),
+    getAliasSuggestionsForImport(params.importId).catch(() => ({} as Record<string, AliasValue>)),
+    getDuplicateWarnings(params.importId).catch(() => [] as string[]),
   ]);
 
   return (
@@ -60,6 +64,8 @@ export default async function ReconcileDetailPage({ params }: { params: { import
         categories={categories}
         stagingRows={(stagingRes.data ?? []) as StagingRow[]}
         transactions={(txnRes.data ?? []) as TxnRow[]}
+        aliasSuggestions={aliasSuggestions}
+        duplicateWarnings={duplicateWarnings}
       />
     </div>
   );
