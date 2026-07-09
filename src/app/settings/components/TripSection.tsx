@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { TripRow } from "@/lib/types";
 import { CURRENCIES } from "@/lib/currencyList";
+import { todayIso } from "@/lib/format";
 import { startTrip, endTrip, updateTrip, deleteTrip } from "@/app/actions/trips";
 import { toast } from "@/lib/toast";
 
@@ -191,7 +192,7 @@ function NewTripForm({
   pending: boolean;
   run: (fn: () => Promise<unknown>, ok?: string) => () => void;
 }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   const [name, setName] = useState("");
   const [currency, setCurrency] = useState("USD");
   const [rate, setRate] = useState("");
