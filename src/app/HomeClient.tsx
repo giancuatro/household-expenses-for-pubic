@@ -35,6 +35,7 @@ import {
 } from "./actions/transactions";
 import { ForeignMoneyInput } from "@/components/ui/ForeignMoneyInput";
 import { FxSettleSheet } from "@/components/ui/FxSettleSheet";
+import { BalanceCheckSheet } from "@/components/BalanceCheckSheet";
 import { formatForeign, getCurrency } from "@/lib/currencyList";
 import {
   Sheet,
@@ -135,6 +136,7 @@ export default function HomeClient({
   defaultPaymentMethodId: householdDefaultPmId,
 }: Props) {
   const router = useRouter();
+  const [balanceCheckOpen, setBalanceCheckOpen] = useState(false);
 
   // Cycle-rollover auto-refresh removed: in Next.js 14.2.15 a single
   // router.refresh() during initial render of a dynamically-rendered page
@@ -887,6 +889,12 @@ export default function HomeClient({
         }}
       />
 
+      <BalanceCheckSheet
+        open={balanceCheckOpen}
+        onOpenChange={setBalanceCheckOpen}
+        onDone={() => router.refresh()}
+      />
+
       {/* ============ Summary (current month) ============ */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="card">
@@ -932,9 +940,29 @@ export default function HomeClient({
           >
             {predictedBalance?.balance != null ? yen(predictedBalance.balance) : "—"}
           </div>
+          <button
+            type="button"
+            onClick={() => setBalanceCheckOpen(true)}
+            className="mt-1 text-[11px] text-primary underline underline-offset-2"
+          >
+            実残高と照合
+          </button>
         </div>
       </section>
 
+      {/* ============ Details (collapsed): per-user split + budget ============ */}
+      <details className="group">
+        <summary className="card cursor-pointer flex items-center justify-between text-sm font-semibold list-none">
+          <span className="flex items-center gap-2">
+            詳細（ユーザー別収支・予算進捗）
+            {budgetAlerts.some((a) => a.ratio >= 1) && (
+              <span className="chip bg-destructive/10 text-destructive border border-destructive/30 text-[10px]">予算超過</span>
+            )}
+          </span>
+          <span className="text-xs text-muted-foreground group-open:hidden">開く ▾</span>
+          <span className="text-xs text-muted-foreground hidden group-open:inline">閉じる ▴</span>
+        </summary>
+        <div className="space-y-3 mt-3">
       <section className="card">
         <div className="text-sm font-semibold mb-3">
           {formatJaMonth(currentMonth + "-01")} のユーザー別収支
@@ -1125,6 +1153,8 @@ export default function HomeClient({
           <NotifyButton alerts={budgetAlerts.map((a) => ({ name: a.c.name, ratio: a.ratio }))} />
         )}
       </section>
+        </div>
+      </details>
 
       {/* ============ Transaction list with month navigator ============ */}
       <section className="card">
@@ -1578,7 +1608,6 @@ function TxnRow({
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
-            {t.is_advance_payment && <span aria-hidden="true" className="shrink-0">🔄</span>}
             <span
               className="text-xs rounded-full px-2 py-0.5 font-medium shrink-0 truncate max-w-[140px]"
               style={
@@ -1589,20 +1618,17 @@ function TxnRow({
             >
               {label}
             </span>
-            {paymentMethod && (
-              <span
-                className={clsx(
-                  "text-[10px] rounded-full px-2 py-0.5 font-medium shrink-0 truncate max-w-[160px] border",
-                  paymentMethod.type === "credit_card"
-                    ? "bg-primary/10 text-primary border-primary/30"
-                    : paymentMethod.type === "transfer"
-                    ? "bg-muted text-muted-foreground border-border"
-                    : "bg-muted text-muted-foreground border-border",
+            {/* Lightweight glance hints; full detail (payment method, FX, advance) is in the expand. */}
+            {(t.is_advance_payment || paymentMethod || t.original_currency) && (
+              <span className="text-[11px] text-muted-foreground shrink-0" aria-hidden="true">
+                {t.is_advance_payment && "🔄"}
+                {paymentMethod?.type === "credit_card" && "💳"}
+                {paymentMethod && paymentMethod.type === "transfer" && "🏦"}
+                {paymentMethod && paymentMethod.type === "cash" && "💴"}
+                {t.original_currency && "✈️"}
+                {t.fx_status === "pending" && (
+                  <span className="text-amber-700"> 未確定</span>
                 )}
-                title={paymentMethod.name}
-              >
-                {paymentMethod.type === "credit_card" ? "💳 " : paymentMethod.type === "transfer" ? "🏦 " : "💴 "}
-                {paymentMethod.name}
               </span>
             )}
           </div>
@@ -1616,37 +1642,6 @@ function TxnRow({
               {t.note}
             </div>
           )}
-          {t.original_currency && t.original_amount != null && (
-            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-muted-foreground">
-              <span>
-                原価 {formatForeign(t.original_amount, t.original_currency)}
-                {t.fx_rate && (
-                  <>
-                    {" "}・ {t.fx_status === "finalized" ? "=" : "≈"}{" "}
-                    <span className="font-mono">{t.fx_rate.toFixed(t.original_currency === "KRW" || t.original_currency === "IDR" || t.original_currency === "VND" ? 4 : 2)}</span>
-                    ¥/{t.original_currency}
-                  </>
-                )}
-              </span>
-              {t.fx_status === "pending" && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSettleFx();
-                  }}
-                  className="chip text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 border border-amber-500/30 hover:bg-amber-500/25"
-                >
-                  未確定
-                </button>
-              )}
-              {t.fx_status === "finalized" && (
-                <span className="chip text-[10px] px-1.5 py-0 bg-success/10 text-success border border-success/30">
-                  確定
-                </span>
-              )}
-            </div>
-          )}
         </div>
         <div className={clsx("font-semibold shrink-0 text-right tabular-nums whitespace-nowrap pt-0.5", amountColor)}>
           {sign}
@@ -1654,6 +1649,50 @@ function TxnRow({
         </div>
       </button>
       {open && !selectionMode && (
+        <>
+        {(paymentMethod || t.original_currency || t.is_advance_payment) && (
+          <div className="mt-2 space-y-1 text-[11px] text-muted-foreground border-t border-border pt-2">
+            {paymentMethod && (
+              <div>
+                支払方法:{" "}
+                {paymentMethod.type === "credit_card" ? "💳 " : paymentMethod.type === "transfer" ? "🏦 " : "💴 "}
+                {paymentMethod.name}
+              </div>
+            )}
+            {t.is_advance_payment && (
+              <div>🔄 立替 {t.advance_settled ? "（精算済み）" : "（未精算）"}</div>
+            )}
+            {t.original_currency && t.original_amount != null && (
+              <div className="flex items-center gap-1.5">
+                <span>
+                  原価 {formatForeign(t.original_amount, t.original_currency)}
+                  {t.fx_rate && (
+                    <>
+                      {" "}・ {t.fx_status === "finalized" ? "=" : "≈"}{" "}
+                      <span className="font-mono">{t.fx_rate.toFixed(t.original_currency === "KRW" || t.original_currency === "IDR" || t.original_currency === "VND" ? 4 : 2)}</span>
+                      ¥/{t.original_currency}
+                    </>
+                  )}
+                </span>
+                {t.fx_status === "pending" && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSettleFx();
+                    }}
+                    className="chip text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 border border-amber-500/30 hover:bg-amber-500/25"
+                  >
+                    未確定
+                  </button>
+                )}
+                {t.fx_status === "finalized" && (
+                  <span className="chip text-[10px] px-1.5 py-0 bg-success/10 text-success border border-success/30">確定</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div className="mt-2 flex gap-2 flex-wrap text-xs justify-end">
           {t.is_advance_payment && (
             <button
@@ -1702,6 +1741,7 @@ function TxnRow({
             削除
           </button>
         </div>
+        </>
       )}
     </li>
   );
