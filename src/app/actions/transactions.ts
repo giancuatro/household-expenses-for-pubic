@@ -5,7 +5,8 @@ import { z } from "zod";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
 import { listTransactionsForMonth } from "@/lib/queries";
-import { monthKey } from "@/lib/format";
+import { monthKey, todayIso } from "@/lib/format";
+import { computeFxAmount } from "@/lib/fx";
 import type { TxnKind, TransactionRow } from "@/lib/types";
 
 function ymOf(dateIso: string): string {
@@ -56,7 +57,7 @@ export async function upsertTransaction(input: z.infer<typeof TxnSchema>) {
   }
 
   const finalAmount = hasFx
-    ? Math.max(1, Math.round((parsed.original_amount as number) * (parsed.fx_rate as number)))
+    ? computeFxAmount(parsed.original_amount as number, parsed.fx_rate as number)
     : parsed.amount;
   if (finalAmount <= 0) throw new Error("金額は1円以上で入力してください。");
 
@@ -238,7 +239,7 @@ export async function toggleAdvanceSettled(
     .eq("id", id)
     .single();
   const settled_at = settled
-    ? (settledAt && /^\d{4}-\d{2}-\d{2}$/.test(settledAt) ? settledAt : todayIsoLocal())
+    ? (settledAt && /^\d{4}-\d{2}-\d{2}$/.test(settledAt) ? settledAt : todayIso())
     : null;
   const { error } = await sb
     .from("transactions")
@@ -249,11 +250,6 @@ export async function toggleAdvanceSettled(
 
   if (prev?.date) revalidateTag(`hh:${hid}:txn:${ymOf(prev.date)}`);
   revalidateTag(`hh:${hid}:transactions`);
-}
-
-function todayIsoLocal(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 /* -------------------- FX settlement (travel mode) -------------------- */

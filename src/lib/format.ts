@@ -34,7 +34,7 @@ export function formatJaMonth(d: string | Date): string {
  *
  * Example: 2026-04-19 (day=19) → "2026-04"  |  2026-04-20 (day=20) → "2026-05"
  */
-export function monthKey(d: Date = new Date()): string {
+export function monthKey(d: Date = jstToday()): string {
   const day = d.getDate();
   if (day < 20) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -74,13 +74,29 @@ export function addMonths(ym: string, delta: number): string {
   return monthKey(d);
 }
 
-/** Today as YYYY-MM-DD (local). */
+/**
+ * The app's calendar is always Asia/Tokyo. Deriving "today", "this month" and
+ * the 20-day cycle boundary from the runtime-local clock breaks on Vercel (UTC):
+ * between 00:00–09:00 JST the server is still on the previous UTC day, which
+ * would shift the 20th-cutoff and mis-generate fixed costs. These helpers pin
+ * everything to JST regardless of where the code runs.
+ */
+const JST_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Tokyo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** Today as YYYY-MM-DD in Asia/Tokyo (independent of runtime TZ). */
 export function todayIso(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return JST_DATE_FMT.format(new Date());
+}
+
+/** `new Date()` re-expressed at midnight of the current Asia/Tokyo calendar day. */
+function jstToday(): Date {
+  const [y, m, day] = todayIso().split("-").map(Number);
+  return new Date(y, m - 1, day);
 }
 
 /** Pick a Y-axis unit (label + divisor) so tick numbers stay short. Always returns a non-empty label. */

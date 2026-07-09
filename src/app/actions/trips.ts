@@ -4,6 +4,7 @@ import { revalidateTag } from "next/cache";
 import { z } from "zod";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
+import { todayIso } from "@/lib/format";
 
 /**
  * Phase 7 — Travel mode actions.
@@ -67,7 +68,7 @@ export async function endTrip(input: z.infer<typeof EndSchema>) {
   const parsed = EndSchema.parse(input);
   const sb = getSupabaseServer();
 
-  const endedAt = parsed.ended_at ?? new Date().toISOString().slice(0, 10);
+  const endedAt = parsed.ended_at ?? todayIso();
   const { error } = await sb
     .from("trips")
     .update({ ended_at: endedAt })
