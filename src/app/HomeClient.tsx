@@ -138,9 +138,9 @@ export default function HomeClient({
   // Cycle-rollover auto-refresh removed: in Next.js 14.2.15 a single
   // router.refresh() during initial render of a dynamically-rendered page
   // can trigger an infinite history.replaceState() loop (see vercel/next.js
-  // #65770). The fixed-cost catch-up runs on every server render via
-  // applyFixedCostsForMonth in layout.tsx, so we don't lose anything by
-  // skipping this client-side trigger.
+  // #65770). The fixed-cost catch-up runs server-side via
+  // ensureFixedCostsApplied in the home page's data fetch (throttled) plus the
+  // daily cron, so we don't lose anything by skipping this client-side trigger.
 
   // Resolve the initial payer/payment method from Settings → 世帯 defaults.
   // Fallbacks (first user / no payment method) keep the form usable for

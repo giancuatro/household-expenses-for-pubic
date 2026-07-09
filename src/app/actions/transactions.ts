@@ -136,7 +136,8 @@ export async function listUnsettledAdvances(): Promise<TransactionRow[]> {
     .eq("household_id", hid)
     .eq("is_advance_payment", true)
     .eq("advance_settled", false)
-    .order("date", { ascending: false });
+    .order("date", { ascending: false })
+    .limit(200);
   if (error) throw new Error(error.message);
   return (data ?? []) as TransactionRow[];
 }
