@@ -16,6 +16,7 @@ import {
   type PdfStrategyId,
 } from "@/lib/csvImport";
 import { findGroupMatches, reconcile, statusFromConfidence, type CandidateTxn, type CardRow } from "@/lib/reconcile/matcher";
+import { learnMerchantAlias, getAliasMap, type AliasValue } from "@/lib/reconcile/merchantAlias";
 import { monthKey } from "@/lib/format";
 import { isPlausibleRate } from "@/lib/currencyList";
 import type { TxnKind } from "@/lib/types";
@@ -549,6 +550,10 @@ export async function acceptMatch(input: z.infer<typeof RowIdSchema>): Promise<{
   // accepting the suggestion, so we don't need a separate confirmation.
   await finalizeFxIfPending(sb, hid, matchedTxnId, ids[0]);
 
+  // Learn from the existing txn this card row was linked to (its category/user
+  // is the user's ground truth for this merchant).
+  await learnAliasFromMatch(sb, hid, stagingId, matchedTxnId);
+
   const ym = await monthOfTxn(sb, hid, matchedTxnId);
   if (ym) revalidateTag(`hh:${hid}:txn:${ym}`);
   revalidateTag(`hh:${hid}:transactions`);
@@ -589,6 +594,37 @@ async function finalizeFxIfPending(
     .update({ amount: jpy, fx_rate: rate, fx_status: "finalized" })
     .eq("household_id", hid)
     .eq("id", txnId);
+}
+
+/**
+ * Learn a merchant alias from an accepted match: the linked transaction's
+ * (user, category) is the household's ground truth for this staging row's
+ * merchant. Best-effort — wrapped errors never block the accept.
+ */
+async function learnAliasFromMatch(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  stagingId: string,
+  txnId: string,
+) {
+  const { data: stage } = await sb
+    .from("staging_card_transactions")
+    .select("merchant")
+    .eq("household_id", hid)
+    .eq("id", stagingId)
+    .maybeSingle();
+  const { data: txn } = await sb
+    .from("transactions")
+    .select("user_id, category_type, category_id")
+    .eq("household_id", hid)
+    .eq("id", txnId)
+    .maybeSingle();
+  if (!stage || !txn) return;
+  await learnMerchantAlias(sb, hid, stage.merchant as string | null, {
+    user_id: (txn.user_id as string | null) ?? null,
+    category_type: (txn.category_type as TxnKind | null) ?? null,
+    category_id: (txn.category_id as string | null) ?? null,
+  });
 }
 
 async function monthOfTxn(
@@ -731,9 +767,18 @@ export async function createTransactionFromCard(
     note: note || null,
     payment_method_id: imp.payment_method_id,
     source: "card-import",
+    source_ref: `card:${staging.id}`,
     statement_row_id: staging.id,
   });
   if (insErr) throw new Error(`取引の作成に失敗: ${insErr.message}`);
+
+  // Learn "this merchant → (user, category)" so a future import of the same
+  // shop can be pre-filled with one tap.
+  await learnMerchantAlias(sb, hid, staging.merchant as string | null, {
+    user_id: parsed.user_id,
+    category_type: parsed.category_type as TxnKind,
+    category_id: parsed.category_id ?? null,
+  });
 
   const { error: updErr } = await sb
     .from("staging_card_transactions")
@@ -791,11 +836,197 @@ export async function archiveImport(importId: string) {
 /*  in one round-trip.                                                     */
 /* ---------------------------------------------------------------------- */
 
+interface StagingLite {
+  id: string;
+  date: string;
+  amount: number;
+  merchant: string | null;
+  match_group_id: string | null;
+}
+
+/**
+ * Shared engine for every "create a transaction directly from a card row"
+ * bulk path. For each item it detaches any speculative group, inserts a
+ * card-import transaction (traceable via source_ref='card:<staging_id>'),
+ * flips the staging row to 'created', and learns the merchant alias. Returns
+ * the touched months so the caller can revalidate.
+ */
+async function persistCardTxns(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  pmId: string | null,
+  items: Array<{ row: StagingLite; value: { user_id: string; category_type: TxnKind; category_id: string | null } }>,
+): Promise<{ created: number; months: Set<string> }> {
+  let created = 0;
+  const months = new Set<string>();
+  for (const { row, value } of items) {
+    if (row.match_group_id) {
+      await sb
+        .from("staging_card_transactions")
+        .update({ matched_transaction_id: null, match_confidence: null, match_group_id: null, status: "unmatched" })
+        .eq("household_id", hid)
+        .eq("match_group_id", row.match_group_id)
+        .neq("id", row.id);
+    }
+    const txnId = randomUUID();
+    const { error: insErr } = await sb.from("transactions").insert({
+      id: txnId,
+      household_id: hid,
+      date: row.date,
+      user_id: value.user_id,
+      amount: row.amount,
+      category_type: value.category_type,
+      category_id: value.category_id,
+      note: row.merchant ?? null,
+      payment_method_id: pmId,
+      source: "card-import",
+      source_ref: `card:${row.id}`,
+      statement_row_id: row.id,
+    });
+    if (insErr) throw new Error(`取引の作成に失敗: ${insErr.message}`);
+    const { error: updErr } = await sb
+      .from("staging_card_transactions")
+      .update({ matched_transaction_id: txnId, status: "created", match_confidence: 100 })
+      .eq("household_id", hid)
+      .eq("id", row.id);
+    if (updErr) throw new Error(updErr.message);
+    await learnMerchantAlias(sb, hid, row.merchant, {
+      user_id: value.user_id,
+      category_type: value.category_type,
+      category_id: value.category_id,
+    });
+    months.add(monthKey(new Date(row.date + "T00:00:00")));
+    created++;
+  }
+  return { created, months };
+}
+
+async function importPaymentMethodId(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  importId: string,
+): Promise<string | null> {
+  const { data: imp } = await sb
+    .from("card_statement_imports")
+    .select("payment_method_id")
+    .eq("household_id", hid)
+    .eq("id", importId)
+    .single();
+  if (!imp) throw new Error("インポートが見つかりません。");
+  return imp.payment_method_id as string | null;
+}
+
+async function revalidateAfterBulk(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  importId: string,
+  months: Set<string>,
+): Promise<boolean> {
+  for (const ym of months) revalidateTag(`hh:${hid}:txn:${ym}`);
+  if (months.size > 0) revalidateTag(`hh:${hid}:transactions`);
+  const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
+  revalidateTag(`hh:${hid}:reconcile`);
+  return importDeleted;
+}
+
+const BulkFromRowsSchema = z.object({
+  importId: z.string().uuid(),
+  rowIds: z.array(z.string().uuid()).min(1).max(1000),
+  user_id: z.string().uuid(),
+  category_type: z.enum([
+    "income", "fixed", "loan", "variable", "personal",
+    "transfer_in", "transfer_out", "special", "investment",
+  ]),
+  category_id: z.string().uuid().nullable().optional(),
+});
+
+/**
+ * Bulk-assign the selected staging rows to a single (user, category) — the
+ * "make these N rows 妻の個人支出 / 食費 / …" action. Only rows still awaiting a
+ * decision (unmatched / suggested) are acted on.
+ */
+export async function bulkCreateFromRows(
+  input: z.infer<typeof BulkFromRowsSchema>,
+): Promise<{ created: number; importDeleted: boolean }> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const parsed = BulkFromRowsSchema.parse(input);
+  const sb = getSupabaseServer();
+
+  const pmId = await importPaymentMethodId(sb, hid, parsed.importId);
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, date, amount, merchant, match_group_id")
+    .eq("household_id", hid)
+    .eq("import_id", parsed.importId)
+    .in("id", parsed.rowIds)
+    .in("status", ["unmatched", "suggested"]);
+  const rows = (rowsRaw ?? []) as StagingLite[];
+  if (rows.length === 0) return { created: 0, importDeleted: false };
+
+  const value = {
+    user_id: parsed.user_id,
+    category_type: parsed.category_type as TxnKind,
+    category_id: parsed.category_id ?? null,
+  };
+  const { created, months } = await persistCardTxns(
+    sb, hid, pmId, rows.map((row) => ({ row, value })),
+  );
+  const importDeleted = await revalidateAfterBulk(sb, hid, parsed.importId, months);
+  return { created, importDeleted };
+}
+
+/**
+ * "推測で埋める": create transactions for every unmatched row whose merchant
+ * has a learned alias, using that alias's (user, category). Suggestions are
+ * recomputed server-side — the client's proposed values are never trusted.
+ */
+export async function bulkCreateFromSuggestions(
+  input: { importId: string },
+): Promise<{ created: number; importDeleted: boolean }> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const importId = z.string().uuid().parse(input.importId);
+  const sb = getSupabaseServer();
+
+  const pmId = await importPaymentMethodId(sb, hid, importId);
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, date, amount, merchant, match_group_id")
+    .eq("household_id", hid)
+    .eq("import_id", importId)
+    .eq("status", "unmatched");
+  const rows = (rowsRaw ?? []) as StagingLite[];
+  if (rows.length === 0) return { created: 0, importDeleted: false };
+
+  const aliasMap = await getAliasMap(sb, hid, rows.map((r) => r.merchant));
+  const items: Array<{ row: StagingLite; value: { user_id: string; category_type: TxnKind; category_id: string | null } }> = [];
+  for (const row of rows) {
+    if (!row.merchant) continue;
+    const alias = aliasMap.get(row.merchant);
+    if (!alias || !alias.user_id || !alias.category_type) continue;
+    items.push({
+      row,
+      value: { user_id: alias.user_id, category_type: alias.category_type, category_id: alias.category_id },
+    });
+  }
+  if (items.length === 0) return { created: 0, importDeleted: false };
+
+  const { created, months } = await persistCardTxns(sb, hid, pmId, items);
+  const importDeleted = await revalidateAfterBulk(sb, hid, importId, months);
+  return { created, importDeleted };
+}
+
 const BulkFamilySchema = z.object({
   importId: z.string().uuid(),
   user_id: z.string().uuid(),
 });
 
+/**
+ * Family-card rows are the spouse's personal expense by household convention.
+ * Thin wrapper over the shared create engine: every unmatched cardholder=
+ * 'family' row becomes (user_id, category_type='personal').
+ */
 export async function bulkCreateFamilyCard(
   input: z.infer<typeof BulkFamilySchema>,
 ): Promise<{ created: number; importDeleted: boolean }> {
@@ -804,14 +1035,7 @@ export async function bulkCreateFamilyCard(
   const { importId, user_id } = BulkFamilySchema.parse(input);
   const sb = getSupabaseServer();
 
-  const { data: imp } = await sb
-    .from("card_statement_imports")
-    .select("payment_method_id")
-    .eq("household_id", hid)
-    .eq("id", importId)
-    .single();
-  if (!imp) throw new Error("インポートが見つかりません。");
-
+  const pmId = await importPaymentMethodId(sb, hid, importId);
   const { data: rowsRaw } = await sb
     .from("staging_card_transactions")
     .select("id, date, amount, merchant, match_group_id")
@@ -819,67 +1043,102 @@ export async function bulkCreateFamilyCard(
     .eq("import_id", importId)
     .eq("status", "unmatched")
     .eq("cardholder", "family");
-  const rows = (rowsRaw ?? []) as Array<{
-    id: string;
-    date: string;
-    amount: number;
-    merchant: string | null;
-    match_group_id: string | null;
-  }>;
-  if (rows.length === 0) {
-    return { created: 0, importDeleted: false };
-  }
+  const rows = (rowsRaw ?? []) as StagingLite[];
+  if (rows.length === 0) return { created: 0, importDeleted: false };
 
-  let created = 0;
-  const monthsTouched = new Set<string>();
-  for (const r of rows) {
-    if (r.match_group_id) {
-      await sb
-        .from("staging_card_transactions")
-        .update({
-          matched_transaction_id: null,
-          match_confidence: null,
-          match_group_id: null,
-          status: "unmatched",
-        })
-        .eq("household_id", hid)
-        .eq("match_group_id", r.match_group_id)
-        .neq("id", r.id);
-    }
-    const txnId = randomUUID();
-    const { error: insErr } = await sb.from("transactions").insert({
-      id: txnId,
-      household_id: hid,
-      date: r.date,
-      user_id,
-      amount: r.amount,
-      category_type: "personal",
-      category_id: null,
-      note: r.merchant ?? null,
-      payment_method_id: imp.payment_method_id,
-      source: "card-import",
-      statement_row_id: r.id,
-    });
-    if (insErr) throw new Error(`家族カード一括登録の失敗: ${insErr.message}`);
-    const { error: updErr } = await sb
-      .from("staging_card_transactions")
-      .update({
-        matched_transaction_id: txnId,
-        status: "created",
-        match_confidence: 100,
-      })
-      .eq("household_id", hid)
-      .eq("id", r.id);
-    if (updErr) throw new Error(updErr.message);
-    monthsTouched.add(monthKey(new Date(r.date + "T00:00:00")));
-    created++;
-  }
-
-  const importDeleted = await maybeAutoDeleteImport(sb, hid, importId);
-  for (const ym of monthsTouched) revalidateTag(`hh:${hid}:txn:${ym}`);
-  revalidateTag(`hh:${hid}:transactions`);
-  revalidateTag(`hh:${hid}:reconcile`);
+  const value = { user_id, category_type: "personal" as TxnKind, category_id: null };
+  const { created, months } = await persistCardTxns(
+    sb, hid, pmId, rows.map((row) => ({ row, value })),
+  );
+  const importDeleted = await revalidateAfterBulk(sb, hid, importId, months);
   return { created, importDeleted };
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Read helpers for the reconcile UI (consumed by page.tsx in WS2 M4)    */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * For every unmatched staging row in an import, resolve a learned alias
+ * suggestion (if any), keyed by staging row id. Server-computed so the UI can
+ * render "推測: <category>" chips without trusting client state.
+ */
+export async function getAliasSuggestionsForImport(
+  importId: string,
+): Promise<Record<string, AliasValue>> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, merchant")
+    .eq("household_id", hid)
+    .eq("import_id", importId)
+    .eq("status", "unmatched");
+  const rows = (rowsRaw ?? []) as Array<{ id: string; merchant: string | null }>;
+  if (rows.length === 0) return {};
+
+  const aliasMap = await getAliasMap(sb, hid, rows.map((r) => r.merchant));
+  const out: Record<string, AliasValue> = {};
+  for (const r of rows) {
+    if (!r.merchant) continue;
+    const alias = aliasMap.get(r.merchant);
+    if (alias && alias.user_id && alias.category_type) out[r.id] = alias;
+  }
+  return out;
+}
+
+/**
+ * Warn-first cross-file dedup: staging rows whose (payment_method, date,
+ * amount) already exists as a card-import transaction linked to a DIFFERENT
+ * staging row. Returns the set of possibly-duplicate staging ids. No unique
+ * constraint is enforced — legitimate same-shop/same-amount/same-day repeats
+ * exist — so this is advisory only.
+ */
+export async function getDuplicateWarnings(importId: string): Promise<string[]> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const sb = getSupabaseServer();
+
+  const pmId = await importPaymentMethodId(sb, hid, importId);
+  if (!pmId) return [];
+  const { data: rowsRaw } = await sb
+    .from("staging_card_transactions")
+    .select("id, date, amount")
+    .eq("household_id", hid)
+    .eq("import_id", importId)
+    .in("status", ["unmatched", "suggested"]);
+  const rows = (rowsRaw ?? []) as Array<{ id: string; date: string; amount: number }>;
+  if (rows.length === 0) return [];
+
+  const minDate = rows.reduce((a, r) => (r.date < a ? r.date : a), rows[0].date);
+  const maxDate = rows.reduce((a, r) => (r.date > a ? r.date : a), rows[0].date);
+  const { data: existRaw } = await sb
+    .from("transactions")
+    .select("date, amount, statement_row_id")
+    .eq("household_id", hid)
+    .eq("payment_method_id", pmId)
+    .eq("source", "card-import")
+    .gte("date", minDate)
+    .lte("date", maxDate);
+  const existing = (existRaw ?? []) as Array<{ date: string; amount: number; statement_row_id: string | null }>;
+  const key = (d: string, a: number) => `${d}::${a}`;
+  const existingKeys = new Map<string, Set<string>>(); // key → set of staging_row_ids that own it
+  for (const t of existing) {
+    const k = key(t.date, t.amount);
+    const set = existingKeys.get(k) ?? new Set<string>();
+    if (t.statement_row_id) set.add(t.statement_row_id);
+    existingKeys.set(k, set);
+  }
+  const dupes: string[] = [];
+  for (const r of rows) {
+    const owners = existingKeys.get(key(r.date, r.amount));
+    // A collision counts only if an existing card-import txn with this
+    // (date, amount) is linked to a different staging row (or none).
+    if (owners && (owners.size === 0 || !owners.has(r.id))) dupes.push(r.id);
+  }
+  return dupes;
 }
 
 export async function bulkAcceptHighConfidence(
