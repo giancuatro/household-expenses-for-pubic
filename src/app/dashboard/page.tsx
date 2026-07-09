@@ -1,6 +1,7 @@
 import { getSupabaseServer } from "@/lib/supabase/server";
 import {
-  listAllTransactions,
+  listTransactionsSince,
+  listMonthlyRollup,
   listCategories,
   listUsers,
   listPaymentMethods,
@@ -8,6 +9,7 @@ import {
   listFixedCostMasters,
   listPendingFxTransactions,
 } from "@/lib/queries";
+import { cashFlowWindowStart } from "@/lib/cashFlow";
 import { requireSession } from "@/lib/auth";
 import { fetchLivePricesWithTimeout, type LivePrice } from "@/lib/stockPrice";
 import DashboardClient from "./DashboardClient";
@@ -20,13 +22,20 @@ export default async function DashboardPage() {
   const hid = household.household_id;
   const sb = getSupabaseServer();
 
-  const [users, categories, txns, paymentMethods, cashSnapshots, fixedCostMasters, pendingFx, tradesRes, holdingsRes] =
+  // Charts that span all history (monthly / stacked / donut / heatmap) run off a
+  // DB-side rollup; the cash-flow projection and current-cycle widgets only need
+  // a recent window — same bound as the home page so predicted balances match.
+  const cashSnapshots = await listCashBalanceSnapshots(hid).catch(() => []);
+  const windowStart = cashFlowWindowStart(cashSnapshots);
+
+  const t0 = Date.now();
+  const [users, categories, windowTxns, rollup, paymentMethods, fixedCostMasters, pendingFx, tradesRes, holdingsRes] =
     await Promise.all([
       listUsers(hid),
       listCategories(hid),
-      listAllTransactions(hid),
+      listTransactionsSince(hid, windowStart),
+      listMonthlyRollup(hid),
       listPaymentMethods(hid).catch(() => []),
-      listCashBalanceSnapshots(hid).catch(() => []),
       listFixedCostMasters(hid).catch(() => []),
       listPendingFxTransactions(hid).catch(() => []),
       sb
@@ -40,6 +49,9 @@ export default async function DashboardPage() {
         .eq("household_id", hid)
         .order("fetched_at", { ascending: false }),
     ]);
+  console.log(
+    `[perf] dashboard queries ${Date.now() - t0}ms, window rows: ${windowTxns.length}, rollup rows: ${rollup.length}`,
+  );
 
   const pendingFxSummary = {
     count: pendingFx.length,
@@ -67,7 +79,8 @@ export default async function DashboardPage() {
     <DashboardClient
       users={users}
       categories={categories}
-      transactions={txns}
+      windowTransactions={windowTxns}
+      rollup={rollup}
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
       fixedCostMasters={fixedCostMasters}

@@ -5,7 +5,7 @@ import type {
   TransactionRow,
 } from "@/lib/types";
 import { computeBilling } from "@/lib/paymentSchedule";
-import { addMonths, firstOfMonth, monthDateRange, monthKey, todayIso } from "@/lib/format";
+import { addDaysIso, addMonths, firstOfMonth, monthDateRange, monthKey, todayIso } from "@/lib/format";
 
 /**
  * One day on the cash-flow timeline.
@@ -32,20 +32,33 @@ export type CashFlowEvent = {
   kind: "card_settle" | "cash_in" | "cash_out" | "transfer_in" | "transfer_out" | "snapshot";
 };
 
-function addDays(iso: string, delta: number): string {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + delta);
-  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
-}
-
 function listDaysInclusive(from: string, to: string): string[] {
   const out: string[] = [];
   let cur = from;
   while (cur <= to) {
     out.push(cur);
-    cur = addDays(cur, 1);
+    cur = addDaysIso(cur, 1);
   }
   return out;
+}
+
+/**
+ * Start date for the bounded transaction window that still yields a correct
+ * cash-flow projection. `buildCashFlowProjection` discards any transaction whose
+ * settlement date is on/before the anchor (latest snapshot), so we only need
+ * rows back to ~70 days before the anchor — enough to cover a card purchase
+ * whose settlement lands just after the anchor. Snapshot-less households fall
+ * back to today−120d. Shared by the home and dashboard SSR fetches so their
+ * predicted balances stay identical.
+ */
+export function cashFlowWindowStart(
+  snapshots: { as_of_date: string }[],
+  today: string = todayIso(),
+): string {
+  if (snapshots.length === 0) return addDaysIso(today, -120);
+  const latest = snapshots.reduce((mx, s) => (s.as_of_date > mx ? s.as_of_date : mx), "");
+  const base = latest && latest < today ? latest : today; // min(latest, today)
+  return addDaysIso(base, -70);
 }
 
 /**

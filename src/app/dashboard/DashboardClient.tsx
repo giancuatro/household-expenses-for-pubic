@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   Bar,
   BarChart,
@@ -27,15 +28,27 @@ import type {
   TransactionRow,
   UserRow,
 } from "@/lib/types";
+import type { MonthlyRollupRow } from "@/lib/queries";
 import { yen, monthKey, addMonths, yAxisUnit, makeTickFormatter } from "@/lib/format";
 import { buildCategoryColorMap, CATEGORY_PALETTE } from "@/lib/categoryColors";
 import { useChartTheme } from "@/lib/chartTheme";
 import clsx from "clsx";
-import AssetTrendChart from "./components/AssetTrendChart";
 import CardCfSummary from "./components/CardCfSummary";
 import CashFlowProjection from "./components/CashFlowProjection";
 import SpendPace from "./components/SpendPace";
 import LargeSpendHighlights from "./components/LargeSpendHighlights";
+
+// Asset-trend pulls its own recharts + price logic; defer it so it doesn't
+// weigh down the dashboard's initial JS. Fixed-height placeholder avoids a
+// layout shift while it streams in on the client.
+const AssetTrendChart = dynamic(() => import("./components/AssetTrendChart"), {
+  ssr: false,
+  loading: () => (
+    <section className="card">
+      <div className="h-72 animate-pulse rounded bg-muted/40" />
+    </section>
+  ),
+});
 
 type Period = "3m" | "6m" | "1y" | "all";
 const PERIODS: { key: Period; label: string }[] = [
@@ -65,7 +78,8 @@ function renderDonutLabel({
 export default function DashboardClient({
   users,
   categories,
-  transactions,
+  windowTransactions,
+  rollup,
   paymentMethods,
   cashSnapshots,
   fixedCostMasters,
@@ -76,7 +90,10 @@ export default function DashboardClient({
 }: {
   users: UserRow[];
   categories: CategoryRow[];
-  transactions: TransactionRow[];
+  /** Recent-window rows (≈anchor−70d) for the cash-flow / current-cycle widgets. */
+  windowTransactions: TransactionRow[];
+  /** DB-side monthly rollup driving the full-history charts. */
+  rollup: MonthlyRollupRow[];
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
   fixedCostMasters: FixedCostMasterRow[];
@@ -100,23 +117,24 @@ export default function DashboardClient({
     const byMonthCat = new Map<string, Map<string, number>>();
     const byCat = new Map<string, number>();
 
-    for (const t of transactions) {
-      if (t.category_type === "transfer_in" || t.category_type === "transfer_out") continue;
-      if (t.is_advance_payment) continue;
-      const ym = monthKey(new Date(t.date + "T00:00:00"));
+    // Advances are already excluded server-side; transfers are filtered here to
+    // keep the original chart semantics (net income/expense, category totals).
+    for (const r of rollup) {
+      if (r.category_type === "transfer_in" || r.category_type === "transfer_out") continue;
+      const ym = r.ym;
       ms.add(ym);
       const mm = byMonth.get(ym) ?? { income: 0, expense: 0, net: 0 };
-      if (t.category_type === "income") mm.income += t.amount;
-      else if (["fixed", "loan", "variable", "personal", "special"].includes(t.category_type))
-        mm.expense += t.amount;
+      if (r.category_type === "income") mm.income += r.total;
+      else if (["fixed", "loan", "variable", "personal", "special"].includes(r.category_type))
+        mm.expense += r.total;
       mm.net = mm.income - mm.expense;
       byMonth.set(ym, mm);
 
-      if (t.category_id) {
+      if (r.category_id) {
         const cm = byMonthCat.get(ym) ?? new Map<string, number>();
-        cm.set(t.category_id, (cm.get(t.category_id) ?? 0) + t.amount);
+        cm.set(r.category_id, (cm.get(r.category_id) ?? 0) + r.total);
         byMonthCat.set(ym, cm);
-        byCat.set(t.category_id, (byCat.get(t.category_id) ?? 0) + t.amount);
+        byCat.set(r.category_id, (byCat.get(r.category_id) ?? 0) + r.total);
       }
     }
 
@@ -148,7 +166,7 @@ export default function DashboardClient({
     });
 
     return { monthly, stacked, donutData, heatmap, months: sortedMonths, cats: activeCats };
-  }, [transactions, categories]);
+  }, [rollup, categories]);
 
   /* ------------- Period-filtered slices ------------- */
   const filteredMonths = useMemo(() => {
@@ -203,7 +221,7 @@ export default function DashboardClient({
       {/* ============ Cash flow projection (next 60 days) ============ */}
       <CashFlowProjection
         snapshots={cashSnapshots}
-        transactions={transactions}
+        transactions={windowTransactions}
         paymentMethods={paymentMethods}
         fixedCostMasters={fixedCostMasters}
       />
@@ -211,7 +229,7 @@ export default function DashboardClient({
       {/* ============ Card CF summary ============ */}
       <CardCfSummary
         users={users}
-        transactions={transactions}
+        transactions={windowTransactions}
         paymentMethods={paymentMethods}
       />
 
@@ -348,8 +366,8 @@ export default function DashboardClient({
       <AssetTrendChart holdings={holdings} trades={trades} initialPrices={initialPrices} />
 
       {/* ============ Spend pace + large-spend highlights ============ */}
-      <SpendPace transactions={transactions} categories={categories} currentMonth={monthKey()} />
-      <LargeSpendHighlights users={users} categories={categories} transactions={transactions} currentMonth={monthKey()} />
+      <SpendPace transactions={windowTransactions} categories={categories} currentMonth={monthKey()} />
+      <LargeSpendHighlights users={users} categories={categories} transactions={windowTransactions} currentMonth={monthKey()} />
 
       {/* ============ Donut + Heatmap ============ */}
       <section className="grid md:grid-cols-2 gap-4">

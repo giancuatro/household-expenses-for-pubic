@@ -1,15 +1,16 @@
 import {
-  listAllTransactions,
   listCashBalanceSnapshots,
   listCategories,
   listFixedCostMasters,
   listKindColors,
   listPaymentMethods,
   listTransactionsForMonth,
+  listTransactionsSince,
   listUsers,
   getActiveTrip,
 } from "@/lib/queries";
 import { addMonths, monthKey } from "@/lib/format";
+import { cashFlowWindowStart } from "@/lib/cashFlow";
 import { ensureFixedCostsApplied } from "@/lib/fixedCosts";
 import { requireSession } from "@/lib/auth";
 import HomeClient from "./HomeClient";
@@ -23,15 +24,23 @@ export default async function HomePage() {
     household.role === "owner" && !household.household.onboarding_completed_at;
   const ym = monthKey();
   const prevYm = addMonths(ym, -1);
+
+  // The predicted-balance projection only needs transactions back to ~70 days
+  // before the latest snapshot (see cashFlowWindowStart), so we resolve the
+  // (cached, tiny) snapshots first and bound the main fetch instead of pulling
+  // every historical row.
+  const cashSnapshots = await listCashBalanceSnapshots(hid).catch(() => []);
+  const windowStart = cashFlowWindowStart(cashSnapshots);
+
+  const t0 = Date.now();
   const [
     users,
     categories,
     transactions,
     prevTransactions,
-    allTransactions,
+    windowTransactions,
     fixedCostMasters,
     paymentMethods,
-    cashSnapshots,
     kindColors,
     activeTrip,
   ] = await Promise.all([
@@ -39,14 +48,16 @@ export default async function HomePage() {
     listCategories(hid),
     listTransactionsForMonth(hid, ym),
     listTransactionsForMonth(hid, prevYm),
-    listAllTransactions(hid),
+    listTransactionsSince(hid, windowStart),
     listFixedCostMasters(hid),
     listPaymentMethods(hid).catch(() => []),
-    listCashBalanceSnapshots(hid).catch(() => []),
     listKindColors(hid).catch(() => []),
     getActiveTrip(hid).catch(() => null),
     ensureFixedCostsApplied(hid).catch(() => null),
   ]);
+  console.log(
+    `[perf] home queries ${Date.now() - t0}ms, window rows: ${windowTransactions.length}, since: ${windowStart}`,
+  );
 
   return (
     <HomeClient
@@ -54,7 +65,7 @@ export default async function HomePage() {
       categories={categories}
       transactions={transactions}
       prevTransactions={prevTransactions}
-      allTransactions={allTransactions}
+      windowTransactions={windowTransactions}
       fixedCostMasters={fixedCostMasters}
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
