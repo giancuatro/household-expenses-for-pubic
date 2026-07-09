@@ -56,7 +56,8 @@ type Props = {
   categories: CategoryRow[];
   transactions: TransactionRow[];
   prevTransactions: TransactionRow[];
-  allTransactions: TransactionRow[];
+  /** Recent-window transactions (≈anchor−70d onward) for the cash-flow projection. */
+  windowTransactions: TransactionRow[];
   fixedCostMasters: FixedCostMasterRow[];
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
@@ -122,7 +123,7 @@ export default function HomeClient({
   categories,
   transactions,
   prevTransactions,
-  allTransactions,
+  windowTransactions,
   fixedCostMasters,
   paymentMethods,
   cashSnapshots,
@@ -376,7 +377,7 @@ export default function HomeClient({
     // ため fromDate は省略する。
     const proj = buildCashFlowProjection({
       snapshots: cashSnapshots,
-      transactions: allTransactions,
+      transactions: windowTransactions,
       paymentMethods,
       fixedCostMasters,
       endDate: target,
@@ -384,7 +385,7 @@ export default function HomeClient({
     const day = proj.days.find((d) => d.date === target);
     const balance = day ? day.balance : proj.anchor?.balance ?? null;
     return { date: target, balance, dayOfMonth: targetDay };
-  }, [cashSnapshots, allTransactions, paymentMethods, fixedCostMasters]);
+  }, [cashSnapshots, windowTransactions, paymentMethods, fixedCostMasters]);
 
   /* ----- Previous-month summary (for delta indicators) ----- */
   const prevSummary = useMemo(() => {

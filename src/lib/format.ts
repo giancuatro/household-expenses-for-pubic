@@ -67,6 +67,13 @@ export function firstOfMonth(ym: string): string {
   return `${ym}-01`;
 }
 
+/** Add N days to a YYYY-MM-DD date, returning YYYY-MM-DD. */
+export function addDaysIso(iso: string, delta: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + delta);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
 /** Add N months to YYYY-MM. */
 export function addMonths(ym: string, delta: number): string {
   const [y, m] = ym.split("-").map(Number);

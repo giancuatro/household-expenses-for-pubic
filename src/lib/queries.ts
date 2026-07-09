@@ -225,6 +225,69 @@ export async function listAllTransactions(hid: string): Promise<TransactionRow[]
   })();
 }
 
+/**
+ * Transactions on/after `sinceIso` (YYYY-MM-DD). Replaces listAllTransactions on
+ * pages that only need a recent window (cash-flow projection, current-cycle
+ * charts) so the SSR payload no longer grows with total history. Shares the
+ * `hh:${hid}:transactions` tag so existing revalidateTag calls bust it.
+ */
+async function _listTransactionsSince(hid: string, sinceIso: string): Promise<TransactionRow[]> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("transactions")
+    .select("*")
+    .eq("household_id", hid)
+    .gte("date", sinceIso)
+    .order("date", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as TransactionRow[];
+}
+
+export async function listTransactionsSince(hid: string, sinceIso: string): Promise<TransactionRow[]> {
+  return unstable_cache(
+    () => _listTransactionsSince(hid, sinceIso),
+    ["transactions-since", hid, sinceIso],
+    { tags: [`hh:${hid}:transactions`, `hh:${hid}`], revalidate: 60 },
+  )();
+}
+
+/** One row of the DB-side monthly rollup (20-day cycle), per category. */
+export interface MonthlyRollupRow {
+  ym: string;
+  category_type: string;
+  category_id: string | null;
+  total: number;
+  cnt: number;
+}
+
+/**
+ * Full-history monthly totals aggregated in Postgres (txn_monthly_rollup RPC,
+ * migration 0020) instead of transferring every row to the dashboard. Excludes
+ * advance payments server-side; transfer rows are kept and filtered client-side
+ * to preserve the existing chart semantics.
+ */
+async function _listMonthlyRollup(hid: string): Promise<MonthlyRollupRow[]> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb.rpc("txn_monthly_rollup", { p_household_id: hid });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as { ym: string; category_type: string; category_id: string | null; total: number | string; cnt: number | string }[])
+    .map((r) => ({
+      ym: r.ym,
+      category_type: r.category_type,
+      category_id: r.category_id,
+      total: Number(r.total),
+      cnt: Number(r.cnt),
+    }));
+}
+
+export async function listMonthlyRollup(hid: string): Promise<MonthlyRollupRow[]> {
+  return unstable_cache(() => _listMonthlyRollup(hid), ["transactions-rollup", hid], {
+    tags: [`hh:${hid}:transactions`, `hh:${hid}`],
+    revalidate: 60,
+  })();
+}
+
 /* ========== Travel mode (Phase 7) ========== */
 
 async function _listTrips(hid: string): Promise<TripRow[]> {
