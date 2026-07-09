@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 const items: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/", label: "ホーム", icon: Home },
   { href: "/report", label: "月次", icon: FileText },
-  { href: "/dashboard", label: "推移", icon: BarChart3 },
+  { href: "/dashboard", label: "分析", icon: BarChart3 },
   { href: "/investment", label: "投資", icon: TrendingUp },
   { href: "/settings", label: "設定", icon: Settings },
 ];

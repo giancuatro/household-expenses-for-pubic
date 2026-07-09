@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 const items = [
   { href: "/", label: "ホーム" },
   { href: "/report", label: "月次" },
-  { href: "/dashboard", label: "ダッシュボード" },
+  { href: "/dashboard", label: "分析" },
   { href: "/investment", label: "投資" },
   { href: "/settings", label: "設定" },
 ];

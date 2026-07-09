@@ -30,6 +30,7 @@ import type {
 } from "@/lib/types";
 import type { MonthlyRollupRow } from "@/lib/queries";
 import { yen, monthKey, addMonths, yAxisUnit, makeTickFormatter } from "@/lib/format";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { buildCategoryColorMap, CATEGORY_PALETTE } from "@/lib/categoryColors";
 import { useChartTheme } from "@/lib/chartTheme";
 import clsx from "clsx";
@@ -199,7 +200,7 @@ export default function DashboardClient({
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold">ダッシュボード</h1>
+      <h1 className="text-xl font-bold">分析</h1>
 
       {pendingFxSummary && pendingFxSummary.count > 0 && (
         <a
@@ -218,21 +219,34 @@ export default function DashboardClient({
         </a>
       )}
 
-      {/* ============ Cash flow projection (next 60 days) ============ */}
-      <CashFlowProjection
-        snapshots={cashSnapshots}
-        transactions={windowTransactions}
-        paymentMethods={paymentMethods}
-        fixedCostMasters={fixedCostMasters}
-      />
+      <Tabs defaultValue="overview">
+        <TabsList className="w-full sm:w-auto">
+          <TabsTrigger value="overview" className="flex-1 sm:flex-none">概況</TabsTrigger>
+          <TabsTrigger value="spending" className="flex-1 sm:flex-none">支出分析</TabsTrigger>
+          <TabsTrigger value="assets" className="flex-1 sm:flex-none">資産</TabsTrigger>
+        </TabsList>
 
-      {/* ============ Card CF summary ============ */}
-      <CardCfSummary
-        users={users}
-        transactions={windowTransactions}
-        paymentMethods={paymentMethods}
-      />
+        {/* ============ 概況 ============ */}
+        <TabsContent value="overview" className="space-y-6">
+          {/* Cash flow projection (next 60 days) */}
+          <CashFlowProjection
+            snapshots={cashSnapshots}
+            transactions={windowTransactions}
+            paymentMethods={paymentMethods}
+            fixedCostMasters={fixedCostMasters}
+          />
+          {/* Card CF summary */}
+          <CardCfSummary
+            users={users}
+            transactions={windowTransactions}
+            paymentMethods={paymentMethods}
+          />
+          {/* Spend pace (current cycle) */}
+          <SpendPace transactions={windowTransactions} categories={categories} currentMonth={monthKey()} />
+        </TabsContent>
 
+        {/* ============ 支出分析 ============ */}
+        <TabsContent value="spending" className="space-y-6">
       {/* ============ Period filter (applies to charts below) ============ */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex gap-2 flex-wrap">
@@ -362,13 +376,6 @@ export default function DashboardClient({
         </div>
       </section>
 
-      {/* ============ Asset trend (independent period) ============ */}
-      <AssetTrendChart holdings={holdings} trades={trades} initialPrices={initialPrices} />
-
-      {/* ============ Spend pace + large-spend highlights ============ */}
-      <SpendPace transactions={windowTransactions} categories={categories} currentMonth={monthKey()} />
-      <LargeSpendHighlights users={users} categories={categories} transactions={windowTransactions} currentMonth={monthKey()} />
-
       {/* ============ Donut + Heatmap ============ */}
       <section className="grid md:grid-cols-2 gap-4">
         <div className="card">
@@ -434,6 +441,14 @@ export default function DashboardClient({
       {fMonthly.length === 0 && (
         <div className="card text-sm text-muted-foreground text-center py-8">まだデータがありません。</div>
       )}
+        </TabsContent>
+
+        {/* ============ 資産 ============ */}
+        <TabsContent value="assets" className="space-y-6">
+          <AssetTrendChart holdings={holdings} trades={trades} initialPrices={initialPrices} />
+          <LargeSpendHighlights users={users} categories={categories} transactions={windowTransactions} currentMonth={monthKey()} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
