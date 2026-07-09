@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import type { CategoryRow, TransactionRow } from "@/lib/types";
-import { yen, monthDateRange, yAxisUnit, makeTickFormatter } from "@/lib/format";
+import { yen, monthDateRange, yAxisUnit, makeTickFormatter, todayIso } from "@/lib/format";
 import { useChartTheme } from "@/lib/chartTheme";
 
 /**
@@ -61,7 +61,7 @@ export default function SpendPace({
     return { days, budgetTotal, start, end };
   }, [transactions, categories, currentMonth]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   const todayIdx = data.days.findIndex((d) => d.date === today);
   // After today, freeze the cumulative line so it doesn't read as a forecast.
   const trimmed = todayIdx >= 0 ? data.days.slice(0, todayIdx + 1) : data.days;

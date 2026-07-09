@@ -5,7 +5,7 @@ import type {
   TransactionRow,
 } from "@/lib/types";
 import { computeBilling } from "@/lib/paymentSchedule";
-import { addMonths, firstOfMonth, monthDateRange, monthKey } from "@/lib/format";
+import { addMonths, firstOfMonth, monthDateRange, monthKey, todayIso } from "@/lib/format";
 
 /**
  * One day on the cash-flow timeline.
@@ -302,7 +302,7 @@ export function buildCashFlowProjection({
   let firstShortfallDate: string | null = null;
   let upcomingOutflow = 0;
   let upcomingInflow = 0;
-  const todayKey = todayIsoLocal();
+  const todayKey = todayIso();
 
   for (const day of listDaysInclusive(anchor.as_of_date, endDate)) {
     let evs: CashFlowEvent[];
@@ -343,9 +343,4 @@ export function buildCashFlowProjection({
     upcomingInflow,
     firstShortfallDate,
   };
-}
-
-function todayIsoLocal(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }

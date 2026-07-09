@@ -49,6 +49,7 @@
 
 ```bash
 npm run typecheck   # tsc --noEmit
+npm run test        # vitest run（金額系純関数テスト。src/**/*.test.ts）
 npm run build       # 本番ビルド（UI 変更時は推奨）
 npm run dev         # 開発サーバー
 ```
