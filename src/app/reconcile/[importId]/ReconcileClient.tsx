@@ -15,6 +15,7 @@ import {
   runMatcher,
 } from "@/app/actions/reconcile";
 import { deleteTransaction } from "@/app/actions/transactions";
+import { BalanceCheckSheet } from "@/components/BalanceCheckSheet";
 import { toast } from "@/lib/toast";
 import type {
   CategoryRow,
@@ -74,6 +75,7 @@ export default function ReconcileClient({
   useEffect(() => setRows(stagingRows), [stagingRows]);
 
   const [removedOrphans, setRemovedOrphans] = useState<Set<string>>(new Set());
+  const [balanceCheckOpen, setBalanceCheckOpen] = useState(false);
   const dupeSet = useMemo(() => new Set(duplicateWarnings), [duplicateWarnings]);
 
   const fmtBanner = searchParams?.get("fmt") ?? null;
@@ -367,13 +369,22 @@ export default function ReconcileClient({
           <p className="text-sm text-muted-foreground">
             一致 {stats.confirmed} ・ 作成 {stats.created} ・ 無視 {stats.ignored}
           </p>
-          <div className="flex justify-center gap-2 pt-1">
-            <button type="button" className="btn-primary text-sm" onClick={() => router.push("/reconcile")}>
+          <div className="flex flex-wrap justify-center gap-2 pt-1">
+            <button type="button" className="btn-primary text-sm" onClick={() => setBalanceCheckOpen(true)}>
+              残高を照合する
+            </button>
+            <button type="button" className="btn-secondary text-sm" onClick={() => router.push("/reconcile")}>
               一覧へ戻る
             </button>
           </div>
         </section>
       )}
+
+      <BalanceCheckSheet
+        open={balanceCheckOpen}
+        onOpenChange={setBalanceCheckOpen}
+        onDone={() => router.push("/reconcile")}
+      />
 
       {/* Queue */}
       <section className="space-y-2">

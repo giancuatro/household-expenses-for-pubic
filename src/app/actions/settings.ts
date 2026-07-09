@@ -5,9 +5,17 @@ import { z } from "zod";
 import { getSupabaseServer, getSupabaseAdmin } from "@/lib/supabase/server";
 import { requireSession, HOUSEHOLD_COOKIE } from "@/lib/auth";
 import { cookies } from "next/headers";
-import { firstOfMonth } from "@/lib/format";
+import { firstOfMonth, monthKey } from "@/lib/format";
 import { regenerateFixedCostForMaster } from "@/lib/fixedCosts";
-import { randomBytes } from "crypto";
+import {
+  listCashBalanceSnapshots,
+  listTransactionsSince,
+  listPaymentMethods,
+  listFixedCostMasters,
+  listUsers,
+} from "@/lib/queries";
+import { buildCashFlowProjection, cashFlowWindowStart } from "@/lib/cashFlow";
+import { randomBytes, randomUUID } from "crypto";
 
 /* -------------------- Household-wide entry defaults -------------------- */
 const HouseholdDefaultsSchema = z.object({
@@ -541,6 +549,113 @@ export async function deleteCashBalance(id: string) {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidateTag(`hh:${hid}:cash-balance`);
+}
+
+/* -------------------- Balance reconciliation (不明金) -------------------- */
+
+/**
+ * Server-compute the predicted cash balance on `as_of_date` using the same
+ * cash-flow projection the home/dashboard use, plus a count of pending-FX rows
+ * in the window (they distort the prediction until the card statement lands).
+ * `predicted` is null when there is no snapshot to anchor from.
+ */
+async function computePredictedAt(
+  hid: string,
+  asOf: string,
+): Promise<{ predicted: number | null; fxPendingCount: number }> {
+  const snapshots = await listCashBalanceSnapshots(hid).catch(() => []);
+  if (snapshots.length === 0) return { predicted: null, fxPendingCount: 0 };
+  const windowStart = cashFlowWindowStart(snapshots, asOf);
+  const [txns, paymentMethods, fixedCostMasters] = await Promise.all([
+    listTransactionsSince(hid, windowStart),
+    listPaymentMethods(hid).catch(() => []),
+    listFixedCostMasters(hid).catch(() => []),
+  ]);
+  const proj = buildCashFlowProjection({
+    snapshots,
+    transactions: txns,
+    paymentMethods,
+    fixedCostMasters,
+    endDate: asOf,
+  });
+  const day = proj.days.find((d) => d.date === asOf);
+  const predicted = day ? day.balance : proj.anchor?.balance ?? null;
+  const fxPendingCount = txns.filter((t) => t.fx_status === "pending" && t.date <= asOf).length;
+  return { predicted, fxPendingCount };
+}
+
+const PredictSchema = z.object({ as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+
+/** Read-only preview for the balance-check sheet. */
+export async function getPredictedBalance(
+  input: z.infer<typeof PredictSchema>,
+): Promise<{ predicted: number | null; fxPendingCount: number }> {
+  const { household } = await requireSession();
+  const { as_of_date } = PredictSchema.parse(input);
+  return computePredictedAt(household.household_id, as_of_date);
+}
+
+const ReconcileBalanceSchema = z.object({
+  as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  actual_balance: z.number().int(),
+});
+
+/**
+ * Reconcile the real cash balance against the prediction. Any difference is
+ * booked as an 不明金 transaction (special=支出 when short, income when over),
+ * which flows into the split just like any other shared cost. A fresh snapshot
+ * re-anchors the projection so the home prediction now equals the real balance.
+ */
+export async function reconcileCashBalance(
+  input: z.infer<typeof ReconcileBalanceSchema>,
+): Promise<{ predicted: number | null; diff: number; transactionId: string | null; snapshotId: string }> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const { as_of_date, actual_balance } = ReconcileBalanceSchema.parse(input);
+  const sb = getSupabaseServer();
+
+  const { predicted } = await computePredictedAt(hid, as_of_date);
+  const diff = predicted === null ? 0 : Math.round(actual_balance - predicted);
+
+  let transactionId: string | null = null;
+  if (diff !== 0 && predicted !== null) {
+    const defaultUserId =
+      household.household.default_user_id ?? (await listUsers(hid).catch(() => []))[0]?.id ?? null;
+    if (!defaultUserId) throw new Error("計上先のユーザーが見つかりません。");
+    transactionId = randomUUID();
+    const note = `残高調整 (実残高 ¥${actual_balance.toLocaleString("ja-JP")} / 予測 ¥${Math.round(predicted).toLocaleString("ja-JP")})`;
+    const { error: insErr } = await sb.from("transactions").insert({
+      id: transactionId,
+      household_id: hid,
+      date: as_of_date,
+      user_id: defaultUserId,
+      amount: Math.abs(diff),
+      category_type: diff < 0 ? "special" : "income",
+      category_id: null,
+      subcategory: "不明金",
+      note,
+      source: "balance-adjust",
+      source_ref: `balance-adjust:${as_of_date}:${randomUUID()}`,
+    });
+    if (insErr) throw new Error(`残高調整の記録に失敗: ${insErr.message}`);
+  }
+
+  const snapshotId = randomUUID();
+  const { error: snapErr } = await sb.from("cash_balance_snapshots").insert({
+    id: snapshotId,
+    household_id: hid,
+    as_of_date,
+    balance: actual_balance,
+    note: "残高照合",
+  });
+  if (snapErr) throw new Error(`スナップショットの保存に失敗: ${snapErr.message}`);
+
+  revalidateTag(`hh:${hid}:cash-balance`);
+  if (transactionId) {
+    revalidateTag(`hh:${hid}:txn:${monthKey(new Date(as_of_date + "T00:00:00"))}`);
+    revalidateTag(`hh:${hid}:transactions`);
+  }
+  return { predicted, diff, transactionId, snapshotId };
 }
 
 /* -------------------- Household settings + invitations -------------------- */

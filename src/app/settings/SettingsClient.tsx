@@ -51,6 +51,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MoneyInput } from "@/components/ui/MoneyInput";
 import { ColorPicker } from "@/components/ui/ColorPicker";
 import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
+import { BalanceCheckSheet } from "@/components/BalanceCheckSheet";
 import {
   buildCategoryColorMap,
   KIND_DEFAULT_HEX,
@@ -110,6 +111,7 @@ export default function SettingsClient({
   const [tab, setTab] = useState(initialTab);
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
+  const [balanceCheckOpen, setBalanceCheckOpen] = useState(false);
 
   function changeTab(next: string) {
     setTab(next);
@@ -226,9 +228,24 @@ export default function SettingsClient({
             <p className="text-xs text-muted-foreground mb-3">
               「現在いくら現金（銀行・財布合算）があるか」を記録します。最新の手入力スナップショットを起点に、その後の収入・支出・カード引落を加減算してリアルタイム残高を計算します。残高がずれた時は新しいスナップショットを追加して再アンカーしてください。
             </p>
+            <button
+              type="button"
+              className="btn-primary text-sm w-full sm:w-auto"
+              onClick={() => setBalanceCheckOpen(true)}
+            >
+              実残高と照合（不明金を記録）
+            </button>
+            <p className="text-xs text-muted-foreground mt-1 mb-3">
+              予測残高との差額を「不明金」として計上し、同時に新しいスナップショットで再アンカーします。
+            </p>
             <CashBalanceList snapshots={cashSnapshots} start={start} onError={setErr} pending={pending} />
             <AddCashBalanceForm start={start} onError={setErr} pending={pending} />
           </section>
+          <BalanceCheckSheet
+            open={balanceCheckOpen}
+            onOpenChange={setBalanceCheckOpen}
+            onDone={() => router.refresh()}
+          />
         </TabsContent>
 
         <TabsContent value="payments">
