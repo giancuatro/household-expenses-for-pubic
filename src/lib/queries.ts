@@ -275,7 +275,8 @@ export async function listPendingFxTransactions(hid: string): Promise<Transactio
     .select("*")
     .eq("household_id", hid)
     .eq("fx_status", "pending")
-    .order("date", { ascending: false });
+    .order("date", { ascending: false })
+    .limit(500);
   if (error) throw new Error(error.message);
   return (data ?? []) as TransactionRow[];
 }

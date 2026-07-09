@@ -10,6 +10,7 @@ import {
   getActiveTrip,
 } from "@/lib/queries";
 import { addMonths, monthKey } from "@/lib/format";
+import { ensureFixedCostsApplied } from "@/lib/fixedCosts";
 import { requireSession } from "@/lib/auth";
 import HomeClient from "./HomeClient";
 
@@ -44,6 +45,7 @@ export default async function HomePage() {
     listCashBalanceSnapshots(hid).catch(() => []),
     listKindColors(hid).catch(() => []),
     getActiveTrip(hid).catch(() => null),
+    ensureFixedCostsApplied(hid).catch(() => null),
   ]);
 
   return (

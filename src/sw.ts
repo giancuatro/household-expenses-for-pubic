@@ -26,7 +26,7 @@ declare const self: ServiceWorkerGlobalScope;
  *                      authenticated views drop through to network.
  */
 const SENSITIVE_PATH_RE =
-  /^\/(?:api\/(?:me|logout|cron)|dashboard|settings|investment|report|reconcile)(?:\/|$)/;
+  /^\/(?:$|api\/(?:me|logout|cron)(?:\/|$)|(?:dashboard|settings|investment|report|reconcile)(?:\/|$))/;
 
 const sensitiveCache: RuntimeCaching = {
   matcher: ({ url: { pathname }, sameOrigin }) =>

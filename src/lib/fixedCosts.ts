@@ -1,6 +1,27 @@
+import { unstable_cache } from "next/cache";
 import { getSupabaseAdmin } from "./supabase/server";
 import { firstOfMonth, monthKey, monthDateRange, addMonths } from "./format";
 import type { FixedCostMasterRow } from "./types";
+
+/**
+ * Throttled ensure: applies the current month's fixed costs at most once per
+ * hour per household, using `unstable_cache` as a write-throttle (the wrapped
+ * function only re-runs when the cache entry expires or its tag is
+ * revalidated). On error nothing is cached, so the next call retries. Master
+ * edits call `revalidateTag('hh:<hid>:fixed-cost-masters')`, forcing an
+ * immediate re-apply. The daily cron remains as a backstop.
+ */
+export async function ensureFixedCostsApplied(hid: string) {
+  const ym = monthKey();
+  return unstable_cache(
+    async () => {
+      await applyFixedCostsForMonth(hid, ym);
+      return Date.now();
+    },
+    ["fixed-costs-ensure", hid, ym],
+    { revalidate: 3600, tags: [`hh:${hid}:fixed-cost-masters`] },
+  )();
+}
 
 /**
  * Apply fixed-cost masters for a given month into `transactions`. Scoped per

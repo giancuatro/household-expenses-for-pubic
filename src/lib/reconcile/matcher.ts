@@ -67,13 +67,14 @@ function merchantBonus(card: string | null, note: string | null): number {
 export function scorePair(card: CardRow, txn: CandidateTxn): number {
   if (txn.amount !== card.amount) return 0;       // amount mismatch → not a candidate
   const days = daysBetween(card.date, txn.date);
+  // Same date AND same yen is the ONLY auto-confirm (100). A merchant match
+  // must never push a date-drifted pair to 100 — those stay suggestions.
+  if (days === 0) return 100;
   let s: number;
-  if (days === 0) s = 100;
-  else if (days <= 3) s = 80;
+  if (days <= 3) s = 80;
   else if (days <= 7) s = 60;
   else return 0;
-  s = Math.min(100, s + merchantBonus(card.merchant, txn.note));
-  return s;
+  return Math.min(95, s + merchantBonus(card.merchant, txn.note));
 }
 
 /**

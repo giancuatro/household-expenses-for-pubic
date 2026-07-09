@@ -2,8 +2,6 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
-import { applyFixedCostsForMonth } from "@/lib/fixedCosts";
-import { monthKey } from "@/lib/format";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TopNav } from "@/components/layout/TopNav";
@@ -48,13 +46,6 @@ export const viewport: Viewport = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
   const authed = !!session;
-  if (session) {
-    try {
-      await applyFixedCostsForMonth(session.household.household_id, monthKey());
-    } catch {
-      /* non-fatal */
-    }
-  }
   const householdLabel = session?.household.household.name ?? "家計簿";
   return (
     <html lang="ja" suppressHydrationWarning>
