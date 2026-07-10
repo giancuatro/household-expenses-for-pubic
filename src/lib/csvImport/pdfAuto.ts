@@ -160,12 +160,43 @@ const COMPACT_DATE_RE =
 // contain a second complete date — skip those.
 const EMBEDDED_DATE_RE = /\d{4}[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/;
 
+// A line that is nothing but a decimal money amount ("56.69", "1,234.50",
+// "$45.00"). Foreign-currency statements (e.g. a US road-trip on an AMEX card)
+// print the original USD amount on its own line, and COMPACT_DATE_RE happily
+// reads "10.30" as month=10/day=30. Real transaction rows always carry a
+// merchant next to the date, so a bare amount line is never a date.
+const PURE_AMOUNT_LINE_RE = /^\s*[¥￥$]?\s*[\d,]+\.\d{2}\s*$/;
+
 function findReferenceYear(body: string): number | null {
-  const re = /(\d{4})[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/;
-  const m = body.match(re);
-  if (!m) return null;
-  const y = parseInt(m[1], 10);
-  return y >= 1900 && y <= 2200 ? y : null;
+  // Primary: a fully-formed date (YYYY?MM?DD) with clean separators. Precise
+  // for well-behaved statements (Rakuten / JCB / 三井住友). We scan every match
+  // and take the first in a plausible range so a stray out-of-range hit — e.g.
+  // a garbled reference number like "0161À…" — doesn't win and short-circuit.
+  for (const m of body.matchAll(/(\d{4})[^\d\s]\s*\d{1,2}[^\d\s]\s*\d{1,2}/g)) {
+    const y = parseInt(m[1], 10);
+    if (y >= 2000 && y <= 2100) return y;
+  }
+  // Fallback: AMEX Type3-garbled statements render "2026年" as "20261" (年 maps
+  // to a digit glyph), so the clean-separator pattern above can never anchor on
+  // the year. Take the most frequent standalone 20xx token instead — the
+  // statement year appears in dozens of places (作成日, 決済日, every period
+  // header) and dominates. Card numbers are digit-prefixed so the look-behind
+  // rejects the "2000" inside "…-72000"; a stray 4-digit amount shows up at
+  // most once or twice and loses the vote.
+  const counts = new Map<number, number>();
+  for (const m of body.matchAll(/(?<!\d)(20\d{2})/g)) {
+    const y = parseInt(m[1], 10);
+    if (y >= 2000 && y <= 2100) counts.set(y, (counts.get(y) ?? 0) + 1);
+  }
+  let best: number | null = null;
+  let bestN = 0;
+  for (const [y, n] of counts) {
+    if (n > bestN) {
+      best = y;
+      bestN = n;
+    }
+  }
+  return best;
 }
 
 function extractCompact(body: string): ParseResult {
@@ -182,6 +213,7 @@ function extractCompact(body: string): ParseResult {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (PURE_AMOUNT_LINE_RE.test(line)) continue;
     const dm = line.match(COMPACT_DATE_RE);
     if (!dm) continue;
     const [full, y, mo, d] = dm;
