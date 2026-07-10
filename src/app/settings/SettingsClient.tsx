@@ -47,7 +47,8 @@ import {
 } from "../actions/settings";
 import { createAccount, deleteAccount } from "../actions/investment";
 import { TripSection } from "./components/TripSection";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import clsx from "clsx";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { MoneyInput } from "@/components/ui/MoneyInput";
 import { ColorPicker } from "@/components/ui/ColorPicker";
 import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
@@ -62,6 +63,26 @@ import {
 import { buildUserColorMap } from "@/lib/userColors";
 import type { ColorKindKey } from "@/lib/types";
 import type { HouseholdMembership } from "@/lib/auth";
+
+const TAB_LABEL: Record<string, string> = {
+  household: "世帯",
+  users: "メンバー",
+  categories: "カテゴリ・色",
+  payments: "支払方法",
+  fixed: "固定費",
+  cash: "現金残高",
+  accounts: "証券口座",
+  trips: "旅行",
+  data: "データ管理",
+};
+
+// 9 flat tabs grouped into 3 for navigation. The inner tab values (and thus
+// existing ?tab= deep links) are unchanged.
+const TAB_GROUPS: { key: string; label: string; tabs: string[] }[] = [
+  { key: "basic", label: "基本", tabs: ["household", "users", "categories"] },
+  { key: "billing", label: "支払い・残高", tabs: ["payments", "fixed", "cash"] },
+  { key: "other", label: "その他", tabs: ["accounts", "trips", "data"] },
+];
 
 export default function SettingsClient({
   users,
@@ -137,17 +158,52 @@ export default function SettingsClient({
       {err && <p className="text-sm text-destructive">{err}</p>}
 
       <Tabs value={tab} onValueChange={changeTab} className="w-full">
-        <TabsList className="w-full grid grid-cols-3 sm:grid-cols-9 h-auto">
-          <TabsTrigger value="household">世帯</TabsTrigger>
-          <TabsTrigger value="users">メンバー</TabsTrigger>
-          <TabsTrigger value="categories">カテゴリ・色</TabsTrigger>
-          <TabsTrigger value="fixed">固定費</TabsTrigger>
-          <TabsTrigger value="payments">支払方法</TabsTrigger>
-          <TabsTrigger value="cash">現金残高</TabsTrigger>
-          <TabsTrigger value="accounts">証券口座</TabsTrigger>
-          <TabsTrigger value="trips">旅行</TabsTrigger>
-          <TabsTrigger value="data">データ管理</TabsTrigger>
-        </TabsList>
+        {(() => {
+          const activeGroup =
+            TAB_GROUPS.find((g) => g.tabs.includes(tab)) ?? TAB_GROUPS[0];
+          return (
+            <div className="space-y-2">
+              {/* Group selector */}
+              <div className="grid grid-cols-3 gap-1 rounded-xl bg-muted p-1">
+                {TAB_GROUPS.map((g) => {
+                  const active = g.key === activeGroup.key;
+                  return (
+                    <button
+                      key={g.key}
+                      type="button"
+                      onClick={() => { if (!g.tabs.includes(tab)) changeTab(g.tabs[0]); }}
+                      className={clsx(
+                        "rounded-lg px-3 py-1.5 text-sm font-medium transition-all",
+                        active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground",
+                      )}
+                    >
+                      {g.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Sub-tabs within the active group */}
+              <div className="flex flex-wrap gap-1">
+                {activeGroup.tabs.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => changeTab(t)}
+                    aria-pressed={tab === t}
+                    className={clsx(
+                      "chip border text-sm",
+                      tab === t
+                        ? "bg-primary/10 text-primary border-primary/30 font-medium"
+                        : "bg-card border-border text-muted-foreground",
+                    )}
+                  >
+                    {TAB_LABEL[t]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         <TabsContent value="household">
           <HouseholdSettings
