@@ -13,7 +13,7 @@ import clsx from "clsx";
 import type { TransactionRow } from "@/lib/types";
 import { computeBreakdown } from "@/lib/balance";
 import MonthSelector from "./MonthSelector";
-import InfoTip from "./InfoTip";
+import { BreakdownSheet } from "@/components/ui/BreakdownSheet";
 
 export const dynamic = "force-dynamic";
 
@@ -198,6 +198,86 @@ export default async function ReportPage({
         </div>
       )}
 
+      {/* Balance — card on mobile, table on md+ */}
+      <section className="card">
+        <h2 className="font-semibold mb-3">収支集計</h2>
+        {/* Mobile: cards */}
+        <div className="md:hidden space-y-3">
+          {balance.map((b) => (
+            <div key={b.user.id} className="rounded-xl border border-border p-3">
+              <div className="font-semibold mb-1">{b.user.name}</div>
+              <div className="grid grid-cols-3 gap-1 text-sm">
+                <div><span className="text-xs text-muted-foreground">収入</span><div>{yen(b.income)}</div></div>
+                <div>
+                  <span className="text-xs text-muted-foreground">支出</span>
+                  <BreakdownSheet
+                    title={`${b.user.name}の支出内訳`}
+                    lines={[
+                      { label: `共同出費 ÷ ${N}`, value: yen(b.sharedShare) },
+                      { label: `特別支出 ÷ ${N}`, value: yen(b.specialShare) },
+                      { label: "個人支出", value: yen(b.personal) },
+                      { label: "個人固定費", value: yen(b.personalFixed) },
+                    ]}
+                    total={{ label: "計", value: yen(b.expense) }}
+                  />
+                  <div>{yen(b.expense)}</div>
+                </div>
+                <div>
+                  <span className="text-xs text-muted-foreground">収支</span>
+                  <div className={clsx("font-semibold", b.net >= 0 ? "text-success" : "text-destructive")}>{yen(b.net)}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-sm mt-2">
+                <div><span className="text-xs text-muted-foreground">前月繰越</span> {yen(b.prevCarry)}</div>
+                <span className="text-muted-foreground/60">→</span>
+                <div><span className="text-xs text-muted-foreground">翌月繰越</span> <strong>{yen(b.prevCarry + b.net)}</strong></div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Desktop: table */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-sm min-w-[480px] tabular-nums">
+            <thead className="text-xs text-muted-foreground">
+              <tr>
+                <th className="text-left">ユーザー</th>
+                <th className="text-right">収入</th>
+                <th className="text-right">支出</th>
+                <th className="text-right">収支</th>
+                <th className="text-right">前月繰越</th>
+                <th className="text-right">翌月繰越</th>
+              </tr>
+            </thead>
+            <tbody>
+              {balance.map((b) => (
+                <tr key={b.user.id} className="border-t">
+                  <td className="py-1">{b.user.name}</td>
+                  <td className="text-right">{yen(b.income)}</td>
+                  <td className="text-right whitespace-nowrap">
+                    {yen(b.expense)}
+                    <BreakdownSheet
+                      title={`${b.user.name}の支出内訳`}
+                      lines={[
+                        { label: `共同出費 ÷ ${N}`, value: yen(b.sharedShare) },
+                        { label: `特別支出 ÷ ${N}`, value: yen(b.specialShare) },
+                        { label: "個人支出", value: yen(b.personal) },
+                        { label: "個人固定費", value: yen(b.personalFixed) },
+                      ]}
+                      total={{ label: "計", value: yen(b.expense) }}
+                    />
+                  </td>
+                  <td className={clsx("text-right font-semibold", b.net >= 0 ? "text-success" : "text-destructive")}>
+                    {yen(b.net)}
+                  </td>
+                  <td className="text-right text-muted-foreground">{yen(b.prevCarry)}</td>
+                  <td className="text-right">{yen(b.prevCarry + b.net)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {/* Shared */}
       <section className="card overflow-x-auto">
         <h2 className="font-semibold mb-3">共同出費</h2>
@@ -338,93 +418,13 @@ export default async function ReportPage({
         })}
       </section>
 
-      {/* Balance — card on mobile, table on md+ */}
-      <section className="card">
-        <h2 className="font-semibold mb-3">収支集計</h2>
-        {/* Mobile: cards */}
-        <div className="md:hidden space-y-3">
-          {balance.map((b) => (
-            <div key={b.user.id} className="rounded-xl border border-border p-3">
-              <div className="font-semibold mb-1">{b.user.name}</div>
-              <div className="grid grid-cols-3 gap-1 text-sm">
-                <div><span className="text-xs text-muted-foreground">収入</span><div>{yen(b.income)}</div></div>
-                <div>
-                  <span className="text-xs text-muted-foreground">支出</span>
-                  <InfoTip
-                    title={`${b.user.name}の支出内訳`}
-                    lines={[
-                      { label: `共同出費 ÷ ${N}`, value: yen(b.sharedShare) },
-                      { label: `特別支出 ÷ ${N}`, value: yen(b.specialShare) },
-                      { label: "個人支出", value: yen(b.personal) },
-                      { label: "個人固定費", value: yen(b.personalFixed) },
-                    ]}
-                    total={{ label: "計", value: yen(b.expense) }}
-                  />
-                  <div>{yen(b.expense)}</div>
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground">収支</span>
-                  <div className={clsx("font-semibold", b.net >= 0 ? "text-success" : "text-destructive")}>{yen(b.net)}</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 text-sm mt-2">
-                <div><span className="text-xs text-muted-foreground">前月繰越</span> {yen(b.prevCarry)}</div>
-                <span className="text-muted-foreground/60">→</span>
-                <div><span className="text-xs text-muted-foreground">翌月繰越</span> <strong>{yen(b.prevCarry + b.net)}</strong></div>
-              </div>
-            </div>
-          ))}
-        </div>
-        {/* Desktop: table */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm min-w-[480px] tabular-nums">
-            <thead className="text-xs text-muted-foreground">
-              <tr>
-                <th className="text-left">ユーザー</th>
-                <th className="text-right">収入</th>
-                <th className="text-right">支出</th>
-                <th className="text-right">収支</th>
-                <th className="text-right">前月繰越</th>
-                <th className="text-right">翌月繰越</th>
-              </tr>
-            </thead>
-            <tbody>
-              {balance.map((b) => (
-                <tr key={b.user.id} className="border-t">
-                  <td className="py-1">{b.user.name}</td>
-                  <td className="text-right">{yen(b.income)}</td>
-                  <td className="text-right whitespace-nowrap">
-                    {yen(b.expense)}
-                    <InfoTip
-                      title={`${b.user.name}の支出内訳`}
-                      lines={[
-                        { label: `共同出費 ÷ ${N}`, value: yen(b.sharedShare) },
-                        { label: `特別支出 ÷ ${N}`, value: yen(b.specialShare) },
-                        { label: "個人支出", value: yen(b.personal) },
-                        { label: "個人固定費", value: yen(b.personalFixed) },
-                      ]}
-                      total={{ label: "計", value: yen(b.expense) }}
-                    />
-                  </td>
-                  <td className={clsx("text-right font-semibold", b.net >= 0 ? "text-success" : "text-destructive")}>
-                    {yen(b.net)}
-                  </td>
-                  <td className="text-right text-muted-foreground">{yen(b.prevCarry)}</td>
-                  <td className="text-right">{yen(b.prevCarry + b.net)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <section className="card">
         <h2 className="font-semibold mb-3">一人当たりコスト</h2>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
             <div className="text-xs text-muted-foreground flex items-center">
               全体
-              <InfoTip
+              <BreakdownSheet
                 title={`全体（÷ ${N}）`}
                 lines={[
                   { label: `共同出費 ÷ ${N}`, value: yen(sharedExpenseTotal / N) },
@@ -438,7 +438,7 @@ export default async function ReportPage({
           <div>
             <div className="text-xs text-muted-foreground flex items-center">
               固定費除く
-              <InfoTip
+              <BreakdownSheet
                 title={`固定費除く（÷ ${N}）`}
                 lines={[
                   { label: `共同変動費 ÷ ${N}`, value: yen(sharedVarTotal / N) },
