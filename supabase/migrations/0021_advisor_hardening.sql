@@ -14,8 +14,10 @@
 alter function public.track_fixed_auto_dismissal() set search_path = public;
 
 -- 2 --------------------------------------------------------------------------
-revoke execute on function public.rls_auto_enable() from anon, authenticated;
-revoke execute on function public.track_fixed_auto_dismissal() from anon, authenticated;
+-- Revoke from PUBLIC too — anon/authenticated inherit EXECUTE via PUBLIC, so
+-- revoking only from those roles leaves the /rpc surface open.
+revoke execute on function public.rls_auto_enable() from public, anon, authenticated;
+revoke execute on function public.track_fixed_auto_dismissal() from public, anon, authenticated;
 
 -- 3 --------------------------------------------------------------------------
 alter policy households_owner_update on households
