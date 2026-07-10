@@ -502,6 +502,16 @@ export async function bulkAssignPaymentMethod(input: z.infer<typeof BulkPmSchema
   const p = BulkPmSchema.parse(input);
   if (p.date_from > p.date_to) throw new Error("開始日が終了日より後ろです。");
   const sb = getSupabaseServer();
+  // Verify the target payment method belongs to this household before we stamp
+  // it onto transactions (defense in depth alongside RLS).
+  const { data: pm, error: pmErr } = await sb
+    .from("payment_methods")
+    .select("id")
+    .eq("household_id", hid)
+    .eq("id", p.payment_method_id)
+    .maybeSingle();
+  if (pmErr) throw new Error(pmErr.message);
+  if (!pm) throw new Error("指定された支払い方法が見つかりません。");
   let q = sb
     .from("transactions")
     .update({ payment_method_id: p.payment_method_id })

@@ -19,11 +19,17 @@ const TradeSchema = z.object({
   note: z.string().max(400).optional(),
 });
 
-export async function recordTrade(input: z.infer<typeof TradeSchema>) {
-  const { household } = await requireSession();
-  const hid = household.household_id;
-  const p = TradeSchema.parse(input);
-  const sb = getSupabaseServer();
+/**
+ * Insert the cash-side transaction + the investment_transactions row for one
+ * trade. Does NOT recalculate holdings or revalidate — callers decide when to
+ * do that (once, at the end of a batch). Assumes `hid` is already resolved and
+ * `p` is validated.
+ */
+async function insertTradeRow(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  p: z.infer<typeof TradeSchema>,
+) {
   const priceUnit = getPriceUnit(p.ticker);
   const amountJpy = Math.round((p.quantity * p.price_usd) / priceUnit * p.exchange_rate);
 
@@ -59,6 +65,15 @@ export async function recordTrade(input: z.infer<typeof TradeSchema>) {
     note: p.note ?? null,
   });
   if (invErr) throw new Error(invErr.message);
+}
+
+export async function recordTrade(input: z.infer<typeof TradeSchema>) {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const p = TradeSchema.parse(input);
+  const sb = getSupabaseServer();
+
+  await insertTradeRow(sb, hid, p);
 
   if (p.account_id) {
     await recalculateHoldingsFromTrades(p.account_id);
@@ -213,7 +228,9 @@ export async function bulkRecordTrades(rows: z.infer<typeof BulkTradeRow>[]) {
         continue;
       }
       seenInBatch.add(key);
-      await recordTrade(parsed);
+      // Insert only; holdings are recalculated once after the batch (below),
+      // not per row — otherwise an N-row import is O(N²) recalcs.
+      await insertTradeRow(sb, hid, parsed);
       results.ok++;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -229,6 +246,7 @@ export async function bulkRecordTrades(rows: z.infer<typeof BulkTradeRow>[]) {
     }
   }
   revalidateTag(`hh:${hid}:transactions`);
+  revalidateTag(`hh:${hid}:investment-accounts`);
   return results;
 }
 
