@@ -5,7 +5,7 @@ import { z } from "zod";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
 import { listTransactionsForMonth } from "@/lib/queries";
-import { monthKey, todayIso } from "@/lib/format";
+import { addMonths, monthKey, todayIso } from "@/lib/format";
 import { computeFxAmount } from "@/lib/fx";
 import type { TxnKind, TransactionRow } from "@/lib/types";
 
@@ -147,6 +147,31 @@ export async function getTransactionsForMonth(ym: string): Promise<TransactionRo
   const { household } = await requireSession();
   if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error("Invalid month format");
   return listTransactionsForMonth(household.household_id, ym);
+}
+
+/**
+ * Free-text search over note / subcategory, bounded to the last 24 months so
+ * the scan stays cheap as history grows. Case-insensitive ILIKE; user input is
+ * stripped of characters that would break the PostgREST or() filter grammar.
+ */
+export async function searchTransactions(query: string): Promise<TransactionRow[]> {
+  const { household } = await requireSession();
+  const hid = household.household_id;
+  const safe = query.trim().replace(/[,()%_\\]/g, " ").trim();
+  if (!safe) return [];
+  const pattern = `%${safe}%`;
+  const since = `${addMonths(monthKey(), -24)}-01`;
+  const sb = getSupabaseServer();
+  const { data, error } = await sb
+    .from("transactions")
+    .select("*")
+    .eq("household_id", hid)
+    .gte("date", since)
+    .or(`note.ilike.${pattern},subcategory.ilike.${pattern}`)
+    .order("date", { ascending: false })
+    .limit(100);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as TransactionRow[];
 }
 
 /* -------------------- Bulk operations -------------------- */

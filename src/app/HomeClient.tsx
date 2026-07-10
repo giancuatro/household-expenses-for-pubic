@@ -36,6 +36,7 @@ import {
 import { ForeignMoneyInput } from "@/components/ui/ForeignMoneyInput";
 import { FxSettleSheet } from "@/components/ui/FxSettleSheet";
 import { BalanceCheckSheet } from "@/components/BalanceCheckSheet";
+import { TransactionSearchSheet } from "@/components/TransactionSearchSheet";
 import { formatForeign, getCurrency } from "@/lib/currencyList";
 import {
   Sheet,
@@ -168,6 +169,21 @@ export default function HomeClient({
   const [amount, setAmount] = useState<string>("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [txnKind, setTxnKind] = useState<TxnKind>("variable");
+  // Quick-entry: last 3 variable categories the user picked (localStorage).
+  const [recentCatIds, setRecentCatIds] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("recent-cats-v1");
+      if (raw) setRecentCatIds(JSON.parse(raw) as string[]);
+    } catch { /* ignore */ }
+  }, []);
+  function pushRecentCat(id: string) {
+    setRecentCatIds((prev) => {
+      const next = [id, ...prev.filter((x) => x !== id)].slice(0, 3);
+      try { localStorage.setItem("recent-cats-v1", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
   const [note, setNote] = useState("");
   const [date, setDate] = useState(todayIso());
   const [isAdvance, setIsAdvance] = useState(false);
@@ -476,6 +492,7 @@ export default function HomeClient({
             note: note || null,
             payment_method_id: paymentMethodId,
           });
+          if (txnKind === "variable" && categoryId) pushRecentCat(categoryId);
           reset();
           setEntryOpen(false);
           toast.success(`記録しました（家計 ¥${ourAmt.toLocaleString()} / 立替 ¥${advAmt.toLocaleString()}）`);
@@ -508,6 +525,7 @@ export default function HomeClient({
           fx_rate: fxMode ? fxRateNum : null,
           trip_id: fxMode && activeTrip ? activeTrip.id : null,
         });
+        if (txnKind === "variable" && categoryId) pushRecentCat(categoryId);
         reset();
         setEntryOpen(false);
         const wasEdit = !!editingTxn;
@@ -689,6 +707,33 @@ export default function HomeClient({
                 </button>
               ))}
             </div>
+            {txnKind === "variable" && (() => {
+              const recent = recentCatIds
+                .map((id) => sharedCats.find((c) => c.id === id))
+                .filter((c): c is CategoryRow => !!c);
+              return recent.length > 0 ? (
+                <div className="mb-2">
+                  <div className="text-[11px] text-muted-foreground mb-1">最近使ったカテゴリ</div>
+                  <div className="flex flex-wrap gap-2">
+                    {recent.map((c) => (
+                      <button
+                        type="button"
+                        key={c.id}
+                        onClick={() => setCategoryId(c.id)}
+                        className={clsx(
+                          "chip border text-sm",
+                          categoryId === c.id
+                            ? "border-primary bg-primary/10 text-primary font-medium"
+                            : "border-border bg-card",
+                        )}
+                      >
+                        ⏱ {c.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null;
+            })()}
             {txnKind === "variable" && (
               <div className="flex flex-wrap gap-2">
                 {sharedCats.map((c) => {
@@ -1200,6 +1245,7 @@ export default function HomeClient({
 
         {/* Filter trigger + sort row */}
         <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setFilterOpen(true)}
@@ -1213,6 +1259,8 @@ export default function HomeClient({
               </span>
             )}
           </button>
+          <TransactionSearchSheet users={users} categories={categories} />
+          </div>
           <div className="flex gap-1 text-xs">
             {(
               [
