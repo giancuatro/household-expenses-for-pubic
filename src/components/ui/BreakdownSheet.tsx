@@ -15,7 +15,13 @@ type Props = {
   total?: { label: string; value: string };
 };
 
-export default function InfoTip({ title, lines, total }: Props) {
+/**
+ * Small "i" trigger that opens a bottom sheet with a labelled value breakdown.
+ * The sheet-based counterpart to the popover-style {@link InfoTip}; use this
+ * when the detail is structured data (per-user / per-category figures) rather
+ * than free-form help text. Lives in ui/ so any surface can reuse it.
+ */
+export function BreakdownSheet({ title, lines, total }: Props) {
   return (
     <Sheet>
       <SheetTrigger asChild>
