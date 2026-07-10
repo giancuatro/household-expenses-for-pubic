@@ -5,7 +5,7 @@ import {
   listTransactionsForMonth,
   listUsers,
 } from "@/lib/queries";
-import { addMonths, monthKey, monthDateRange, yen, formatJaMonth } from "@/lib/format";
+import { addMonths, monthKey, monthDateRange, yen, yenSigned, formatJaMonth } from "@/lib/format";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
 import { getPriceUnit } from "@/lib/stockList";
@@ -137,6 +137,35 @@ export default async function ReportPage({
   const perPersonAll = sharedExpenseTotal / N + specialOut / N;
   const perPersonVar = (sharedVarTotal + loanTotal) / N + specialOut / N;
 
+  // Month-over-month category highlights: biggest movers among expense
+  // categories, prev month vs this month. Chips at the top surface "外食 ▲ +32%"
+  // style topics without the user scanning the whole table.
+  const highlights = (() => {
+    const catName = new Map(categories.map((c) => [c.id, c.name]));
+    const EXPENSE = ["variable", "fixed", "loan", "personal", "special"];
+    const sumByCat = (rows: TransactionRow[]) => {
+      const m = new Map<string, number>();
+      for (const t of rows) {
+        if (t.is_advance_payment || !t.category_id) continue;
+        if (!EXPENSE.includes(t.category_type)) continue;
+        m.set(t.category_id, (m.get(t.category_id) ?? 0) + t.amount);
+      }
+      return m;
+    };
+    const cur = sumByCat(txns);
+    const prev = sumByCat(prevTxns);
+    const moves: { id: string; name: string; diff: number; pct: number | null }[] = [];
+    for (const id of new Set([...cur.keys(), ...prev.keys()])) {
+      const c = cur.get(id) ?? 0;
+      const p = prev.get(id) ?? 0;
+      const diff = c - p;
+      if (Math.abs(diff) < 1000) continue; // ignore noise
+      moves.push({ id, name: catName.get(id) ?? "?", diff, pct: p > 0 ? Math.round((diff / p) * 100) : null });
+    }
+    moves.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+    return moves.slice(0, 3);
+  })();
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -147,6 +176,27 @@ export default async function ReportPage({
           <Link href={`/report?m=${addMonths(ym, 1)}`} className="btn-ghost text-sm">▶</Link>
         </div>
       </div>
+
+      {highlights.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">前月比:</span>
+          {highlights.map((h) => {
+            const up = h.diff > 0;
+            return (
+              <span
+                key={h.id}
+                className={clsx(
+                  "chip border text-xs",
+                  up ? "border-destructive/30 text-destructive bg-destructive/5" : "border-success/30 text-success bg-success/5",
+                )}
+                title={`${h.name}: ${yenSigned(h.diff)}`}
+              >
+                {h.name} {up ? "▲" : "▼"} {h.pct != null ? `${up ? "+" : ""}${h.pct}%` : yenSigned(h.diff)}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/* Shared */}
       <section className="card overflow-x-auto">
