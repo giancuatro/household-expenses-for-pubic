@@ -578,7 +578,7 @@ export default function InvestmentClient({ users, accounts, holdings, trades, in
       {/* Trade recorder */}
       <section className="card">
         <h2 className="font-semibold mb-3">売買を記録（家計に連動）</h2>
-        <TradeForm users={users} accounts={accounts} onError={setErr} pending={pending} start={start} />
+        <TradeForm users={users} accounts={accounts} holdings={deduped} onError={setErr} pending={pending} start={start} />
         <CsvImport
           users={users}
           accounts={accounts}
@@ -1219,10 +1219,11 @@ function TickerInput({
 
 /* =================== TradeForm =================== */
 function TradeForm({
-  users, accounts, onError, pending, start,
+  users, accounts, holdings, onError, pending, start,
 }: {
   users: UserRow[];
   accounts: InvestmentAccountRow[];
+  holdings: InvestmentHoldingRow[];
   onError: (e: string | null) => void;
   pending: boolean;
   start: (fn: () => void) => void;
@@ -1241,6 +1242,17 @@ function TradeForm({
   });
   const [tickerType, setTickerType] = useState<"US" | "JP" | "fund">("US");
 
+  // On a sell, snap the account to the one that actually holds the ticker (and
+  // its owner). This is the fix for the phantom-holding bug at its source: the
+  // old default kept accounts[0], so a sell could land in the wrong account.
+  useEffect(() => {
+    if (form.action !== "sell" || !form.ticker) return;
+    const h = holdings.find((x) => x.ticker === form.ticker && x.quantity > 0);
+    if (!h || h.account_id === form.account_id) return;
+    const owner = accounts.find((a) => a.id === h.account_id)?.user_id;
+    setForm((prev) => ({ ...prev, account_id: h.account_id, user_id: owner ?? prev.user_id }));
+  }, [form.action, form.ticker, form.account_id, holdings, accounts]);
+
   const isJpy = tickerType !== "US";
   const isFund = tickerType === "fund";
   const priceLabel = isFund ? "基準価額(¥/万口)" : isJpy ? "株価(¥)" : "単価($)";
@@ -1255,10 +1267,10 @@ function TradeForm({
         if (!form.account_id) return onError("口座を選択してください。");
         start(async () => {
           try {
-            await recordTrade({
+            const res = await recordTrade({
               date: form.date,
               user_id: form.user_id,
-              account_id: form.account_id || undefined,
+              account_id: form.account_id,
               ticker: form.ticker,
               name: form.name || undefined,
               action: form.action,
@@ -1268,6 +1280,7 @@ function TradeForm({
               note: form.note || undefined,
             });
             setForm({ ...form, ticker: "", name: "", quantity: "", price_usd: "", note: "" });
+            onError(res.warnings.length > 0 ? `記録しました（注意: ${res.warnings.join(" / ")}）` : null);
           } catch (err: unknown) { onError(err instanceof Error ? err.message : String(err)); }
         });
       }}

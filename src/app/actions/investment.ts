@@ -5,11 +5,15 @@ import { z } from "zod";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { requireSession } from "@/lib/auth";
 import { getPriceUnit } from "@/lib/stockList";
+import { reduceHoldingsFromTrades, type TradeLike } from "@/lib/stockMath";
 
 const TradeSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   user_id: z.string().uuid(),
-  account_id: z.string().uuid().optional(),
+  // Required: a trade with no account never participates in the account-scoped
+  // holdings recalc, which is how a sell recorded against the wrong (or no)
+  // account silently leaves a phantom position behind.
+  account_id: z.string().uuid(),
   ticker: z.string().min(1).max(20),
   name: z.string().max(120).optional(),
   action: z.enum(["buy", "sell"]),
@@ -18,6 +22,67 @@ const TradeSchema = z.object({
   exchange_rate: z.number().positive(),
   note: z.string().max(400).optional(),
 });
+
+/** Net held quantity of `ticker` in one account (buys − sells). */
+async function heldQuantity(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  account_id: string,
+  ticker: string,
+  excludeTradeId?: string,
+): Promise<number> {
+  const { data } = await sb
+    .from("investment_transactions")
+    .select("id, action, quantity")
+    .eq("household_id", hid)
+    .eq("account_id", account_id)
+    .eq("ticker", ticker);
+  return ((data ?? []) as Array<{ id: string; action: "buy" | "sell"; quantity: number }>)
+    .filter((t) => t.id !== excludeTradeId)
+    .reduce((sum, t) => sum + (t.action === "buy" ? Number(t.quantity) : -Number(t.quantity)), 0);
+}
+
+/**
+ * Reject a sell that exceeds the account's holding of the ticker. The error
+ * names the account(s) that DO hold it — the common cause is picking the wrong
+ * account in the sell form, so telling the user where the shares actually live
+ * turns a silent phantom-holding bug into a one-line fix.
+ */
+async function assertSufficientHolding(
+  sb: ReturnType<typeof getSupabaseServer>,
+  hid: string,
+  account_id: string,
+  ticker: string,
+  sellQty: number,
+  excludeTradeId?: string,
+): Promise<void> {
+  const held = await heldQuantity(sb, hid, account_id, ticker, excludeTradeId);
+  if (sellQty <= held + 1e-9) return;
+
+  const { data: holders } = await sb
+    .from("investment_holdings")
+    .select("account_id, quantity")
+    .eq("household_id", hid)
+    .eq("ticker", ticker)
+    .gt("quantity", 0);
+  const holderRows = (holders ?? []) as Array<{ account_id: string; quantity: number }>;
+  let hint = "";
+  if (holderRows.length > 0) {
+    const { data: accts } = await sb
+      .from("investment_accounts")
+      .select("id, account_name")
+      .eq("household_id", hid)
+      .in("id", holderRows.map((h) => h.account_id));
+    const nameById = new Map(((accts ?? []) as Array<{ id: string; account_name: string }>).map((a) => [a.id, a.account_name]));
+    hint = holderRows
+      .map((h) => `${nameById.get(h.account_id) ?? "?"}(${h.quantity})`)
+      .join("、");
+  }
+  throw new Error(
+    `売却数量 ${sellQty} が保有数量 ${held} を超えています。` +
+      (hint ? ` ${ticker} を保有している口座: ${hint}` : ` この口座に ${ticker} の保有がありません。`),
+  );
+}
 
 /**
  * Insert the cash-side transaction + the investment_transactions row for one
@@ -30,6 +95,9 @@ async function insertTradeRow(
   hid: string,
   p: z.infer<typeof TradeSchema>,
 ) {
+  if (p.action === "sell") {
+    await assertSufficientHolding(sb, hid, p.account_id, p.ticker, p.quantity);
+  }
   const priceUnit = getPriceUnit(p.ticker);
   const amountJpy = Math.round((p.quantity * p.price_usd) / priceUnit * p.exchange_rate);
 
@@ -53,7 +121,7 @@ async function insertTradeRow(
     household_id: hid,
     date: p.date,
     user_id: p.user_id,
-    account_id: p.account_id ?? null,
+    account_id: p.account_id,
     ticker: p.ticker,
     name: p.name ?? null,
     action: p.action,
@@ -67,20 +135,18 @@ async function insertTradeRow(
   if (invErr) throw new Error(invErr.message);
 }
 
-export async function recordTrade(input: z.infer<typeof TradeSchema>) {
+export async function recordTrade(input: z.infer<typeof TradeSchema>): Promise<{ warnings: string[] }> {
   const { household } = await requireSession();
   const hid = household.household_id;
   const p = TradeSchema.parse(input);
   const sb = getSupabaseServer();
 
   await insertTradeRow(sb, hid, p);
-
-  if (p.account_id) {
-    await recalculateHoldingsFromTrades(p.account_id);
-  }
+  const { warnings } = await recalculateHoldingsFromTrades(p.account_id);
 
   revalidateTag(`hh:${hid}:transactions`);
   revalidateTag(`hh:${hid}:investment-accounts`);
+  return { warnings };
 }
 
 const HoldingSchema = z.object({
@@ -140,7 +206,7 @@ export async function createAccount(input: z.infer<typeof AccountSchema>) {
 const BulkTradeRow = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   user_id: z.string().uuid(),
-  account_id: z.string().uuid().optional(),
+  account_id: z.string().uuid(),
   ticker: z.string().min(1).max(20),
   name: z.string().max(120).optional(),
   action: z.enum(["buy", "sell"]),
@@ -306,6 +372,11 @@ export async function updateTrade(input: z.infer<typeof UpdateTradeSchema>) {
     if (!acct) throw new Error("指定された証券口座がこの世帯に存在しません。");
   }
 
+  // Guard oversell on edit too, excluding this row's own current contribution.
+  if (p.action === "sell" && p.account_id) {
+    await assertSufficientHolding(sb, hid, p.account_id, p.ticker, p.quantity, p.id);
+  }
+
   const priceUnit = getPriceUnit(p.ticker);
   const amountJpy = Math.round((p.quantity * p.price_usd) / priceUnit * p.exchange_rate);
 
@@ -353,7 +424,7 @@ export async function updateTrade(input: z.infer<typeof UpdateTradeSchema>) {
   revalidateTag(`hh:${hid}:investment-accounts`);
 }
 
-export async function recalculateHoldingsFromTrades(account_id: string) {
+export async function recalculateHoldingsFromTrades(account_id: string): Promise<{ warnings: string[] }> {
   const { household } = await requireSession();
   const hid = household.household_id;
   const sb = getSupabaseServer();
@@ -373,44 +444,27 @@ export async function recalculateHoldingsFromTrades(account_id: string) {
     .order("date", { ascending: true });
   if (error) throw new Error(error.message);
 
-  const map = new Map<string, { name: string; qty: number; totalCost: number; rate: number }>();
-  for (const t of trades ?? []) {
-    const key = t.ticker;
-    const prev = map.get(key) ?? { name: t.name ?? key, qty: 0, totalCost: 0, rate: t.exchange_rate };
-    if (t.action === "buy") {
-      prev.totalCost += t.quantity * t.price_usd;
-      prev.qty += t.quantity;
-    } else {
-      const newQty = Math.max(0, prev.qty - t.quantity);
-      if (prev.qty > 0) {
-        prev.totalCost = prev.totalCost * (newQty / prev.qty);
-      }
-      prev.qty = newQty;
-    }
-    prev.rate = t.exchange_rate;
-    map.set(key, prev);
-  }
+  const { positions, warnings } = reduceHoldingsFromTrades((trades ?? []) as TradeLike[]);
 
-  for (const [ticker, pos] of map.entries()) {
-    if (pos.qty <= 0) continue;
-    const priceUnit = getPriceUnit(ticker);
-    const avgCost = pos.qty > 0 ? pos.totalCost / pos.qty : 0;
-    const totalJpy = Math.round((pos.qty * avgCost) / priceUnit * pos.rate);
+  for (const pos of positions) {
+    const priceUnit = getPriceUnit(pos.ticker);
+    const totalJpy = Math.round((pos.qty * pos.avgCostUsd) / priceUnit * pos.rate);
     const { error: insErr } = await sb.from("investment_holdings").insert({
       household_id: hid,
       account_id,
-      ticker,
+      ticker: pos.ticker,
       name: pos.name,
       quantity: pos.qty,
-      avg_cost_usd: avgCost,
-      current_price_usd: avgCost,
+      avg_cost_usd: pos.avgCostUsd,
+      current_price_usd: pos.avgCostUsd,
       exchange_rate: pos.rate,
       total_value_jpy: totalJpy,
       unrealized_gain_jpy: 0,
     });
-    if (insErr) throw new Error(`${ticker}: ${insErr.message}`);
+    if (insErr) throw new Error(`${pos.ticker}: ${insErr.message}`);
   }
   revalidateTag(`hh:${hid}:investment-accounts`);
+  return { warnings };
 }
 
 export async function deleteAllInvestmentTransactions(account_id: string) {
