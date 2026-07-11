@@ -19,6 +19,6 @@ export function detectParser(bytes: Uint8Array): ParserDefinition {
 
 export { decodeCsvBytes, normalizeMerchant, splitCsvLine, splitCsvLines } from "./normalize";
 export { computePdfFingerprint, extractPdfText, looksLikePdf } from "./pdf";
-export { ALL_PDF_STRATEGY_IDS, pickBestPdfStrategy, runPdfStrategy } from "./pdfAuto";
+export { ALL_PDF_STRATEGY_IDS, pickBestPdfStrategy, runPdfStrategy, extractStatementSummary } from "./pdfAuto";
 export type { PdfStrategyId } from "./pdfAuto";
-export type { ParsedRow, ParseResult, ParserDefinition, ParserId } from "./types";
+export type { ParsedRow, ParseResult, ParserDefinition, ParserId, StatementSummary } from "./types";

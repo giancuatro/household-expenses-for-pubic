@@ -194,11 +194,19 @@ function projectFixedCostsForward(
   return synthetic;
 }
 
+/** A statement's confirmed 今回ご請求金額, keyed to its settlement date. */
+export type ConfirmedBill = {
+  payment_method_id: string;
+  payment_due_date: string; // YYYY-MM-DD
+  billed_amount: number; // positive yen
+};
+
 export function buildCashFlowProjection({
   snapshots,
   transactions,
   paymentMethods,
   fixedCostMasters = [],
+  confirmedBills = [],
   fromDate,
   endDate,
 }: {
@@ -207,6 +215,12 @@ export function buildCashFlowProjection({
   paymentMethods: PaymentMethodRow[];
   /** Used to forward-project unrealized fixed-cost cash-outs into the window. */
   fixedCostMasters?: FixedCostMasterRow[];
+  /**
+   * Confirmed card bills. On each bill's settlement date the estimated card
+   * bucket is replaced with the real billed amount — the summed transactions
+   * can't reconstruct carry-over, refunds, or FX adjustments.
+   */
+  confirmedBills?: ConfirmedBill[];
   fromDate?: string;
   endDate: string;
 }): {
@@ -301,6 +315,27 @@ export function buildCashFlowProjection({
         kind: "cash_in",
       });
     }
+  }
+
+  // Confirmed bills replace the estimated card bucket on their settlement date
+  // with the actual 今回ご請求金額. Keyed identically to the card bucket
+  // (`date::card::pmId`) so it overwrites the estimate rather than double-counts.
+  for (const bill of confirmedBills) {
+    const day = bill.payment_due_date;
+    if (day <= anchor.as_of_date || day > endDate) continue;
+    const pm = pmById.get(bill.payment_method_id);
+    let dayMap = bucketsByDate.get(day);
+    if (!dayMap) {
+      dayMap = new Map();
+      bucketsByDate.set(day, dayMap);
+    }
+    dayMap.set(`${day}::card::${bill.payment_method_id}`, {
+      date: day,
+      amount: -bill.billed_amount,
+      label: `${pm?.name ?? "カード"} 引落（確定）`,
+      count: 1,
+      kind: "card_settle",
+    });
   }
 
   // Simulate from the anchor date, not from `fromDate`. Events between the

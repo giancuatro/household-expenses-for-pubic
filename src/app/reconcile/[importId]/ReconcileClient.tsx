@@ -9,6 +9,7 @@ import {
   bulkAcceptFxMatches,
   bulkCreateFamilyCard,
   bulkCreateFromSuggestions,
+  bulkImportAll,
   createTransactionFromCard,
   ignoreCardRow,
   rejectMatch,
@@ -24,7 +25,8 @@ import type {
   UserRow,
 } from "@/lib/types";
 import type { AliasValue } from "@/lib/reconcile/merchantAlias";
-import type { ImportRow, StagingRow, TxnRow } from "./page";
+import { yen } from "@/lib/format";
+import type { ImportRow, StagingRow, TxnRow, ConfirmedBillInfo } from "./page";
 
 const TXN_KIND_LABEL: Record<TxnKind, string> = {
   variable: "変動費",
@@ -52,6 +54,7 @@ interface Props {
   transactions: TxnRow[];
   aliasSuggestions: Record<string, AliasValue>;
   duplicateWarnings: string[];
+  confirmedBill: ConfirmedBillInfo | null;
 }
 
 export default function ReconcileClient({
@@ -63,6 +66,7 @@ export default function ReconcileClient({
   transactions,
   aliasSuggestions,
   duplicateWarnings,
+  confirmedBill,
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -77,6 +81,19 @@ export default function ReconcileClient({
   const [removedOrphans, setRemovedOrphans] = useState<Set<string>>(new Set());
   const [balanceCheckOpen, setBalanceCheckOpen] = useState(false);
   const dupeSet = useMemo(() => new Set(duplicateWarnings), [duplicateWarnings]);
+
+  // Fallback bucket for the one-tap "import everything": unknown merchants (no
+  // match, no learned alias) land here. Default 変動費・未分類, owner = card owner.
+  const [fallbackKind, setFallbackKind] = useState<TxnKind>("variable");
+
+  // 検算: gross charges we imported (positive rows only) vs the statement's own
+  // 新規ご利用額. A near-zero gap means every charge line made it in.
+  const importedCharges = useMemo(
+    () => rows.reduce((s, r) => (r.amount > 0 ? s + r.amount : s), 0),
+    [rows],
+  );
+  const chargeGap =
+    confirmedBill?.new_charges != null ? confirmedBill.new_charges - importedCharges : null;
 
   const fmtBanner = searchParams?.get("fmt") ?? null;
   const paymentMethod = paymentMethods.find((p) => p.id === importRow.payment_method_id);
@@ -270,6 +287,37 @@ export default function ReconcileClient({
     });
   }
 
+  function runImportAll() {
+    const fallbackUserId = paymentMethod?.user_id ?? users[0]?.id ?? "";
+    if (!fallbackUserId) return toast.error("取り込み先ユーザーが見つかりません。");
+    startTransition(async () => {
+      try {
+        const r = await bulkImportAll({
+          importId: importRow.id,
+          fallback_user_id: fallbackUserId,
+          fallback_category_type: fallbackKind,
+          fallback_category_id: null,
+          family_user_id: familyDefaultUserId,
+        });
+        const parts = [
+          r.confirmed ? `一致 ${r.confirmed}` : "",
+          r.fxFinalized ? `FX ${r.fxFinalized}` : "",
+          r.family ? `家族 ${r.family}` : "",
+          r.learned ? `学習 ${r.learned}` : "",
+          r.fallback ? `${TXN_KIND_LABEL[fallbackKind]} ${r.fallback}` : "",
+        ].filter(Boolean).join(" ・ ");
+        toast.success(parts ? `一括取り込み完了（${parts}）` : "取り込む明細がありませんでした。");
+        if (r.importDeleted) {
+          router.push("/reconcile");
+          return;
+        }
+        router.refresh();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
   return (
     <div className="space-y-3">
       <header className="card space-y-2">
@@ -294,6 +342,32 @@ export default function ReconcileClient({
           </p>
         )}
 
+        {/* 検算: confirmed billed amount (reflected in the cash-flow projection)
+            + a completeness check against the statement's own 新規ご利用額. */}
+        {confirmedBill && (
+          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs space-y-1">
+            <div className="flex items-center gap-2">
+              <span>💳</span>
+              <span className="font-semibold">実際のご請求額 {yen(confirmedBill.billed_amount)}</span>
+              <span className="text-muted-foreground">（{confirmedBill.payment_due_date} 引き落とし）</span>
+            </div>
+            <div className="text-muted-foreground">
+              キャッシュフローに反映済み
+              {confirmedBill.new_charges != null && (
+                <> ・ 今月の新規ご利用 {yen(confirmedBill.new_charges)} / 取込明細 {yen(importedCharges)}</>
+              )}
+            </div>
+            {chargeGap != null && Math.abs(chargeGap) >= 1 && (
+              <div className="text-destructive">
+                差額 {yen(chargeGap)} — 取り込めていない明細（skip / 未取込）がないか確認してください。
+              </div>
+            )}
+            {chargeGap != null && Math.abs(chargeGap) < 1 && (
+              <div className="text-success">✓ 明細の新規ご利用額と一致しています。</div>
+            )}
+          </div>
+        )}
+
         {/* Progress */}
         <div className="flex items-center gap-2 pt-1 text-sm">
           <span className="font-semibold">残り {remaining}件</span>
@@ -312,7 +386,34 @@ export default function ReconcileClient({
 
       {/* Sticky bulk bar */}
       {remaining > 0 && (
-        <div className="sticky top-[env(safe-area-inset-top)] z-10 card !py-2 flex flex-wrap gap-2">
+        <div className="sticky top-[env(safe-area-inset-top)] z-10 card !py-2 space-y-2">
+          {/* One-tap: match + FX + family + learned, then sweep the rest into
+              the fallback bucket below. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-primary text-xs"
+              disabled={pending}
+              onClick={runImportAll}
+            >
+              ⚡ 一括取り込み ({remaining})
+            </button>
+            <span className="text-xs text-muted-foreground">未学習は</span>
+            <select
+              className="input !w-auto !py-1 text-xs"
+              value={fallbackKind}
+              onChange={(e) => setFallbackKind(e.target.value as TxnKind)}
+              disabled={pending}
+              aria-label="未学習明細の振り分け先"
+            >
+              {TXN_KINDS.map((k) => (
+                <option key={k} value={k}>{TXN_KIND_LABEL[k]}</option>
+              ))}
+            </select>
+            <span className="text-xs text-muted-foreground">へ</span>
+          </div>
+
+          <div className="flex flex-wrap gap-2 border-t border-border pt-2">
           <button
             type="button"
             className="btn-secondary text-xs"
@@ -358,6 +459,7 @@ export default function ReconcileClient({
           >
             再マッチ
           </button>
+          </div>
         </div>
       )}
 

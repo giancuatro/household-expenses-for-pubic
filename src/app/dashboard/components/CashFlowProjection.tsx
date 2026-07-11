@@ -19,7 +19,7 @@ import type {
   TransactionRow,
 } from "@/lib/types";
 import { yen, todayIso, makeTickFormatter, yAxisUnit } from "@/lib/format";
-import { buildCashFlowProjection } from "@/lib/cashFlow";
+import { buildCashFlowProjection, type ConfirmedBill } from "@/lib/cashFlow";
 import { useChartTheme } from "@/lib/chartTheme";
 
 /** Add `delta` days to YYYY-MM-DD (local). */
@@ -39,11 +39,13 @@ export default function CashFlowProjection({
   transactions,
   paymentMethods,
   fixedCostMasters,
+  confirmedBills,
 }: {
   snapshots: CashBalanceSnapshotRow[];
   transactions: TransactionRow[];
   paymentMethods: PaymentMethodRow[];
   fixedCostMasters: FixedCostMasterRow[];
+  confirmedBills: ConfirmedBill[];
 }) {
   const theme = useChartTheme();
 
@@ -56,10 +58,11 @@ export default function CashFlowProjection({
       transactions,
       paymentMethods,
       fixedCostMasters,
+      confirmedBills,
       fromDate,
       endDate,
     });
-  }, [snapshots, transactions, paymentMethods, fixedCostMasters]);
+  }, [snapshots, transactions, paymentMethods, fixedCostMasters, confirmedBills]);
 
   if (snapshots.length === 0) {
     return (

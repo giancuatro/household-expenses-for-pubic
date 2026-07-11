@@ -7,6 +7,7 @@ import {
   listPaymentMethods,
   listCashBalanceSnapshots,
   listFixedCostMasters,
+  listConfirmedBills,
   listPendingFxTransactions,
 } from "@/lib/queries";
 import { cashFlowWindowStart } from "@/lib/cashFlow";
@@ -29,7 +30,7 @@ export default async function DashboardPage() {
   const windowStart = cashFlowWindowStart(cashSnapshots);
 
   const t0 = Date.now();
-  const [users, categories, windowTxns, rollup, paymentMethods, fixedCostMasters, pendingFx, tradesRes, holdingsRes] =
+  const [users, categories, windowTxns, rollup, paymentMethods, fixedCostMasters, confirmedBills, pendingFx, tradesRes, holdingsRes] =
     await Promise.all([
       listUsers(hid),
       listCategories(hid),
@@ -37,6 +38,7 @@ export default async function DashboardPage() {
       listMonthlyRollup(hid),
       listPaymentMethods(hid).catch(() => []),
       listFixedCostMasters(hid).catch(() => []),
+      listConfirmedBills(hid).catch(() => []),
       listPendingFxTransactions(hid).catch(() => []),
       sb
         .from("investment_transactions")
@@ -84,6 +86,7 @@ export default async function DashboardPage() {
       paymentMethods={paymentMethods}
       cashSnapshots={cashSnapshots}
       fixedCostMasters={fixedCostMasters}
+      confirmedBills={confirmedBills}
       holdings={holdings}
       trades={trades}
       initialPrices={initialPrices}

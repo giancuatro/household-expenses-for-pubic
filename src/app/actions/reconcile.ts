@@ -10,16 +10,19 @@ import {
   decodeCsvBytes,
   detectParser,
   extractPdfText,
+  extractStatementSummary,
   looksLikePdf,
   pickBestPdfStrategy,
   runPdfStrategy,
   type PdfStrategyId,
+  type StatementSummary,
 } from "@/lib/csvImport";
 import { findGroupMatches, reconcile, statusFromConfidence, type CandidateTxn, type CardRow } from "@/lib/reconcile/matcher";
 import { learnMerchantAlias, getAliasMap, type AliasValue } from "@/lib/reconcile/merchantAlias";
 import { monthKey } from "@/lib/format";
+import { computeBilling } from "@/lib/paymentSchedule";
 import { isPlausibleRate } from "@/lib/currencyList";
-import type { TxnKind } from "@/lib/types";
+import type { PaymentMethodRow, TxnKind } from "@/lib/types";
 
 /* ---------------------------------------------------------------------- */
 /*  Constants                                                              */
@@ -50,6 +53,8 @@ export interface ImportResult {
   formatRemembered?: boolean;
   /** The PDF strategy used ('compact', 'split-col', ...) — null for CSV imports. */
   pdfStrategy?: string | null;
+  /** 今回ご請求金額 lifted from the statement summary, when available. */
+  billedTotal?: number;
 }
 
 /**
@@ -66,10 +71,11 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
 
   // Confirm payment_method belongs to this household. RLS would block a
   // mismatch anyway, but we want a clean error rather than a constraint
-  // violation downstream.
+  // violation downstream. Also pull the billing schedule so we can key a
+  // confirmed bill to the same settlement date the cash-flow projection uses.
   const { data: pm, error: pmErr } = await sb
     .from("payment_methods")
-    .select("id, household_id")
+    .select("id, household_id, type, closing_day, payment_day, payment_month_offset")
     .eq("household_id", hid)
     .eq("id", parsed.payment_method_id)
     .single();
@@ -108,9 +114,11 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
   let result;
   let pdfStrategy: PdfStrategyId | null = null;
   let formatRemembered = false;
+  let summary: StatementSummary | undefined;
 
   if (isPdf) {
     const body = await extractPdfText(bytes);
+    summary = extractStatementSummary(body);
     const fingerprint = computePdfFingerprint(body);
     const { data: memory } = await sb
       .from("card_pdf_format_memory")
@@ -216,10 +224,39 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     if (error) throw new Error(`明細行の保存に失敗: ${error.message}`);
   }
 
+  // Persist the confirmed bill (今回ご請求金額) keyed to the settlement date the
+  // cash-flow projection buckets this card under, so the projection can show
+  // the real debit instead of the summed estimate. Best-effort: a failure
+  // (incl. card_bills not existing until migration 0022 is applied) must never
+  // block the import itself.
+  let billedTotal: number | undefined;
+  if (summary && result.periodEnd) {
+    const dueDate = computeBilling(result.periodEnd, pm as unknown as PaymentMethodRow).settlementDate;
+    const { error: billErr } = await sb.from("card_bills").upsert(
+      {
+        household_id: hid,
+        payment_method_id: parsed.payment_method_id,
+        payment_due_date: dueDate,
+        billed_amount: summary.billedTotal,
+        new_charges: summary.newCharges,
+        payments_adjustments: summary.paymentsAdjustments,
+        prev_balance: summary.prevBalance,
+        closing_balance: summary.closingBalance,
+        closing_period_start: result.periodStart,
+        closing_period_end: result.periodEnd,
+        source_import_id: importId,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "household_id,payment_method_id,payment_due_date" },
+    );
+    if (!billErr) billedTotal = summary.billedTotal;
+  }
+
   // Run the matcher right away so the UI lands on a populated view.
   await runMatcher(importId);
 
   revalidateTag(`hh:${hid}:reconcile`);
+  revalidateTag(`hh:${hid}:transactions`);
   return {
     importId,
     rowCount: result.rows.length,
@@ -229,6 +266,7 @@ export async function importCardStatement(input: ImportInput): Promise<ImportRes
     periodEnd: result.periodEnd,
     formatRemembered,
     pdfStrategy,
+    billedTotal,
   };
 }
 
@@ -855,7 +893,7 @@ async function persistCardTxns(
   sb: ReturnType<typeof getSupabaseServer>,
   hid: string,
   pmId: string | null,
-  items: Array<{ row: StagingLite; value: { user_id: string; category_type: TxnKind; category_id: string | null } }>,
+  items: Array<{ row: StagingLite; value: { user_id: string; category_type: TxnKind; category_id: string | null; label?: string | null } }>,
 ): Promise<{ created: number; months: Set<string> }> {
   let created = 0;
   const months = new Set<string>();
@@ -877,7 +915,9 @@ async function persistCardTxns(
       amount: row.amount,
       category_type: value.category_type,
       category_id: value.category_id,
-      note: row.merchant ?? null,
+      // Prefer the learned readable label over the raw (often Type3-garbled)
+      // merchant string, so the ledger shows "セブンイレブン" not "ｾﾌﾞﾝ…".
+      note: value.label ?? row.merchant ?? null,
       payment_method_id: pmId,
       source: "card-import",
       source_ref: `card:${row.id}`,
@@ -1000,14 +1040,14 @@ export async function bulkCreateFromSuggestions(
   if (rows.length === 0) return { created: 0, importDeleted: false };
 
   const aliasMap = await getAliasMap(sb, hid, rows.map((r) => r.merchant));
-  const items: Array<{ row: StagingLite; value: { user_id: string; category_type: TxnKind; category_id: string | null } }> = [];
+  const items: Array<{ row: StagingLite; value: { user_id: string; category_type: TxnKind; category_id: string | null; label?: string | null } }> = [];
   for (const row of rows) {
     if (!row.merchant) continue;
     const alias = aliasMap.get(row.merchant);
     if (!alias || !alias.user_id || !alias.category_type) continue;
     items.push({
       row,
-      value: { user_id: alias.user_id, category_type: alias.category_type, category_id: alias.category_id },
+      value: { user_id: alias.user_id, category_type: alias.category_type, category_id: alias.category_id, label: alias.label },
     });
   }
   if (items.length === 0) return { created: 0, importDeleted: false };
@@ -1052,6 +1092,102 @@ export async function bulkCreateFamilyCard(
   );
   const importDeleted = await revalidateAfterBulk(sb, hid, importId, months);
   return { created, importDeleted };
+}
+
+/* ---------------------------------------------------------------------- */
+/*  bulkImportAll — one-tap "import everything"                            */
+/*                                                                         */
+/*  Orchestrates the individual bulk paths in the order that preserves the */
+/*  most information, then sweeps whatever is left into a fallback         */
+/*  (user, category). Each step short-circuits once the import auto-deletes */
+/*  (every row terminal), so we never touch a vanished import.             */
+/* ---------------------------------------------------------------------- */
+
+const BulkImportAllSchema = z.object({
+  importId: z.string().uuid(),
+  fallback_user_id: z.string().uuid(),
+  fallback_category_type: z.enum([
+    "income", "fixed", "loan", "variable", "personal",
+    "transfer_in", "transfer_out", "special", "investment",
+  ]),
+  fallback_category_id: z.string().uuid().nullable().optional(),
+  /** Spouse user for 家族カード rows; omit to skip that step. */
+  family_user_id: z.string().uuid().nullable().optional(),
+});
+
+export interface BulkImportAllResult {
+  fxFinalized: number;
+  confirmed: number;
+  family: number;
+  learned: number;
+  fallback: number;
+  importDeleted: boolean;
+}
+
+export async function bulkImportAll(
+  input: z.infer<typeof BulkImportAllSchema>,
+): Promise<BulkImportAllResult> {
+  const p = BulkImportAllSchema.parse(input);
+  const { importId } = p;
+
+  // 1. Finalize FX suggestions (pending → actual JPY).
+  const fx = await bulkAcceptFxMatches({ importId });
+  let deleted = fx.importDeleted;
+
+  // 2. Accept the remaining high-confidence suggestions against existing txns.
+  let confirmed = 0;
+  if (!deleted) {
+    const r = await bulkAcceptHighConfidence({ importId, minConfidence: 80 });
+    confirmed = r.confirmed;
+    deleted = r.importDeleted;
+  }
+
+  // 3. Family-card rows → spouse's personal expense.
+  let family = 0;
+  if (!deleted && p.family_user_id) {
+    const r = await bulkCreateFamilyCard({ importId, user_id: p.family_user_id });
+    family = r.created;
+    deleted = r.importDeleted;
+  }
+
+  // 4. Learned merchants → auto-created with their remembered (user, category).
+  let learned = 0;
+  if (!deleted) {
+    const r = await bulkCreateFromSuggestions({ importId });
+    learned = r.created;
+    deleted = r.importDeleted;
+  }
+
+  // 5. Everything still unmatched → the fallback bucket (the user's default,
+  //    e.g. 変動費・未分類). This is what makes it a *complete* one-tap import.
+  let fallback = 0;
+  if (!deleted) {
+    const { household } = await requireSession();
+    const hid = household.household_id;
+    const sb = getSupabaseServer();
+    const pmId = await importPaymentMethodId(sb, hid, importId);
+    const { data: rowsRaw } = await sb
+      .from("staging_card_transactions")
+      .select("id, date, amount, merchant, match_group_id")
+      .eq("household_id", hid)
+      .eq("import_id", importId)
+      .eq("status", "unmatched");
+    const rows = (rowsRaw ?? []) as StagingLite[];
+    if (rows.length > 0) {
+      const value = {
+        user_id: p.fallback_user_id,
+        category_type: p.fallback_category_type as TxnKind,
+        category_id: p.fallback_category_id ?? null,
+      };
+      const { created, months } = await persistCardTxns(
+        sb, hid, pmId, rows.map((row) => ({ row, value })),
+      );
+      fallback = created;
+      deleted = await revalidateAfterBulk(sb, hid, importId, months);
+    }
+  }
+
+  return { fxFinalized: fx.finalized, confirmed, family, learned, fallback, importDeleted: deleted };
 }
 
 /* ---------------------------------------------------------------------- */

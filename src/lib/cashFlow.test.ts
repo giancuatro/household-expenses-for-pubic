@@ -57,6 +57,33 @@ describe("buildCashFlowProjection", () => {
     expect(settle.balance).toBe(95000);
   });
 
+  it("a confirmed bill replaces the estimated card bucket on its settlement date", () => {
+    const pm = creditCard({ id: "pm1", closing_day: 15, payment_day: 10, payment_month_offset: 1 });
+    const r = buildCashFlowProjection({
+      snapshots: [snap("2026-04-01", 100000)],
+      transactions: [txn({ date: "2026-04-10", amount: 5000, payment_method_id: "pm1" })],
+      paymentMethods: [pm],
+      // Real statement says the 5/10 debit is 8,000 (carry-over/refunds the app can't see).
+      confirmedBills: [{ payment_method_id: "pm1", payment_due_date: "2026-05-10", billed_amount: 8000 }],
+      endDate: "2026-05-31",
+    });
+    const settle = r.days.find((d) => d.date === "2026-05-10")!;
+    expect(settle.netChange).toBe(-8000); // confirmed, not the 5,000 estimate
+    expect(settle.balance).toBe(92000);
+  });
+
+  it("a confirmed bill still shows even with no matching app transactions", () => {
+    const pm = creditCard({ id: "pm1", closing_day: 15, payment_day: 10, payment_month_offset: 1 });
+    const r = buildCashFlowProjection({
+      snapshots: [snap("2026-04-01", 100000)],
+      transactions: [],
+      paymentMethods: [pm],
+      confirmedBills: [{ payment_method_id: "pm1", payment_due_date: "2026-05-10", billed_amount: 8000 }],
+      endDate: "2026-05-31",
+    });
+    expect(r.days.find((d) => d.date === "2026-05-10")!.netChange).toBe(-8000);
+  });
+
   it("a settled advance adds a cash inflow on advance_settled_at", () => {
     const r = buildCashFlowProjection({
       snapshots: [snap("2026-04-01", 100000)],

@@ -34,7 +34,7 @@ export default async function ReconcileDetailPage({ params }: { params: { import
   const periodStart = (imp.period_start as string | null) ?? "1970-01-01";
   const periodEnd = (imp.period_end as string | null) ?? "9999-12-31";
 
-  const [stagingRes, txnRes, aliasSuggestions, duplicateWarnings] = await Promise.all([
+  const [stagingRes, txnRes, aliasSuggestions, duplicateWarnings, billRes] = await Promise.all([
     sb
       .from("staging_card_transactions")
       .select("id, raw_date, raw_amount, raw_merchant, date, amount, merchant, status, match_confidence, matched_transaction_id, match_group_id, cardholder")
@@ -50,7 +50,16 @@ export default async function ReconcileDetailPage({ params }: { params: { import
       .lte("date", shiftDays(periodEnd, 7)),
     getAliasSuggestionsForImport(params.importId).catch(() => ({} as Record<string, AliasValue>)),
     getDuplicateWarnings(params.importId).catch(() => [] as string[]),
+    // Confirmed bill for the 検算 banner (billed total vs imported rows). Best-
+    // effort: card_bills lands with migration 0022.
+    sb
+      .from("card_bills")
+      .select("billed_amount, new_charges, payment_due_date")
+      .eq("household_id", hid)
+      .eq("source_import_id", params.importId)
+      .maybeSingle(),
   ]);
+  const confirmedBill = (billRes.data as ConfirmedBillInfo | null) ?? null;
 
   return (
     <div className="space-y-4">
@@ -66,6 +75,7 @@ export default async function ReconcileDetailPage({ params }: { params: { import
         transactions={(txnRes.data ?? []) as TxnRow[]}
         aliasSuggestions={aliasSuggestions}
         duplicateWarnings={duplicateWarnings}
+        confirmedBill={confirmedBill}
       />
     </div>
   );
@@ -118,4 +128,10 @@ interface TxnRow {
   original_amount: number | null;
 }
 
-export type { ImportRow, StagingRow, TxnRow };
+interface ConfirmedBillInfo {
+  billed_amount: number;
+  new_charges: number | null;
+  payment_due_date: string;
+}
+
+export type { ImportRow, StagingRow, TxnRow, ConfirmedBillInfo };

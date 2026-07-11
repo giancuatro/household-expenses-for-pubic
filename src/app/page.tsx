@@ -1,6 +1,7 @@
 import {
   listCashBalanceSnapshots,
   listCategories,
+  listConfirmedBills,
   listFixedCostMasters,
   listKindColors,
   listPaymentMethods,
@@ -43,6 +44,7 @@ export default async function HomePage() {
     paymentMethods,
     kindColors,
     activeTrip,
+    confirmedBills,
   ] = await Promise.all([
     listUsers(hid),
     listCategories(hid),
@@ -53,6 +55,7 @@ export default async function HomePage() {
     listPaymentMethods(hid).catch(() => []),
     listKindColors(hid).catch(() => []),
     getActiveTrip(hid).catch(() => null),
+    listConfirmedBills(hid).catch(() => []),
     ensureFixedCostsApplied(hid).catch(() => null),
   ]);
   console.log(
@@ -68,6 +71,7 @@ export default async function HomePage() {
       windowTransactions={windowTransactions}
       fixedCostMasters={fixedCostMasters}
       paymentMethods={paymentMethods}
+      confirmedBills={confirmedBills}
       cashSnapshots={cashSnapshots}
       kindColors={kindColors}
       activeTrip={activeTrip}

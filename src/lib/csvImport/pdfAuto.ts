@@ -1,4 +1,4 @@
-import type { ParseResult, ParsedRow, ParserDefinition } from "./types";
+import type { ParseResult, ParsedRow, ParserDefinition, StatementSummary } from "./types";
 import { parseJpDate, parseYen } from "./normalize";
 
 /**
@@ -382,6 +382,39 @@ function extractSplitCol(body: string): ParseResult {
   }
 
   return { rows, skipped, periodStart: minDate, periodEnd: maxDate };
+}
+
+// ─── statement summary (billed total) ───────────────────────────────
+
+// AMEX prints the reconciliation identity on one line, in ASCII digits even
+// when the surrounding kanji labels are Type3-garbled:
+//   前回締切 837,024 - 支払・調整 914,833 + 新規 1,315,065 = 締切 1,237,256  請求 1,237,256
+// The trailing figure (今回ご請求金額) repeats the closing balance. We accept
+// the match only when the identity holds exactly, so coincidental number runs
+// in other issuers' PDFs don't get mistaken for a summary.
+const SUMMARY_FORMULA_RE =
+  /([\d,]{4,})\s*-\s*([\d,]{4,})\s*\+\s*([\d,]{4,})\s*=\s*([\d,]{4,})(?:\s+([\d,]{4,}))?/;
+
+function commaNum(s: string): number {
+  return parseInt(s.replace(/,/g, ""), 10);
+}
+
+/**
+ * Lift statement-level totals from the summary block. Returns undefined unless
+ * the prev − payments + newCharges = closing identity holds, which keeps this
+ * from firing on issuers that don't print an AMEX-style summary line.
+ */
+export function extractStatementSummary(body: string): StatementSummary | undefined {
+  const m = body.match(SUMMARY_FORMULA_RE);
+  if (!m) return undefined;
+  const prevBalance = commaNum(m[1]);
+  const paymentsAdjustments = commaNum(m[2]);
+  const newCharges = commaNum(m[3]);
+  const closingBalance = commaNum(m[4]);
+  if (prevBalance - paymentsAdjustments + newCharges !== closingBalance) return undefined;
+  const billedTotal = m[5] ? commaNum(m[5]) : closingBalance;
+  if (!Number.isFinite(billedTotal) || billedTotal <= 0) return undefined;
+  return { billedTotal, newCharges, paymentsAdjustments, prevBalance, closingBalance };
 }
 
 // ─── strategy registry ────────────────────────────────────────────────

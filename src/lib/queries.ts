@@ -1,6 +1,7 @@
 import { unstable_cache } from "next/cache";
 import { getSupabaseAdmin } from "./supabase/server";
 import { monthDateRange } from "./format";
+import type { ConfirmedBill } from "./cashFlow";
 import type {
   CategoryRow,
   TransactionRow,
@@ -94,6 +95,25 @@ async function _listInvestmentAccounts(hid: string): Promise<InvestmentAccountRo
 export async function listInvestmentAccounts(hid: string): Promise<InvestmentAccountRow[]> {
   return unstable_cache(() => _listInvestmentAccounts(hid), ["investment-accounts", hid], {
     tags: [`hh:${hid}:investment-accounts`, `hh:${hid}`],
+    revalidate: 60,
+  })();
+}
+
+async function _listConfirmedBills(hid: string): Promise<ConfirmedBill[]> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("card_bills")
+    .select("payment_method_id, payment_due_date, billed_amount")
+    .eq("household_id", hid);
+  // card_bills lands with migration 0022; until then this returns [] so the
+  // projection just falls back to the summed estimate.
+  if (error) return [];
+  return (data ?? []) as ConfirmedBill[];
+}
+
+export async function listConfirmedBills(hid: string): Promise<ConfirmedBill[]> {
+  return unstable_cache(() => _listConfirmedBills(hid), ["confirmed-bills", hid], {
+    tags: [`hh:${hid}:transactions`, `hh:${hid}`],
     revalidate: 60,
   })();
 }
