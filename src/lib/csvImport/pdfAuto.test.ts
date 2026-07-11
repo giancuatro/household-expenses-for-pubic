@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { runPdfStrategy } from "./pdfAuto";
+import { runPdfStrategy, extractStatementSummary } from "./pdfAuto";
 
 /**
  * Regression tests for AMEX Marriott Bonvoy PDF import.
@@ -55,6 +55,35 @@ describe("extractCompact — AMEX Type3 garbled statement", () => {
     // "10.30" / "56.69" / "16.45" are USD amounts, not dates.
     expect(result.rows.some((r) => r.merchant === "(不明)")).toBe(false);
     expect(result.rows.some((r) => r.date === "2026-10-30")).toBe(false);
+  });
+});
+
+describe("extractStatementSummary", () => {
+  it("lifts the billed total from the AMEX reconciliation identity", () => {
+    // prev − payments + newCharges = closing  [billed]
+    const body = "…前回 837,024    -    914,833    +    1,315,065    =    1,237,256    1,237,256 …";
+    const s = extractStatementSummary(body);
+    expect(s).toBeDefined();
+    expect(s!.billedTotal).toBe(1237256);
+    expect(s!.newCharges).toBe(1315065);
+    expect(s!.prevBalance).toBe(837024);
+    expect(s!.paymentsAdjustments).toBe(914833);
+  });
+
+  it("falls back to the closing balance when the trailing 請求額 is absent", () => {
+    const body = "100,000 - 30,000 + 50,000 = 120,000";
+    const s = extractStatementSummary(body);
+    expect(s!.billedTotal).toBe(120000);
+  });
+
+  it("rejects a coincidental number run that doesn't satisfy the identity", () => {
+    // 100 - 20 + 50 = 200 is false → not a summary.
+    const body = "some 100,000 - 20,000 + 50,000 = 200,000 numbers";
+    expect(extractStatementSummary(body)).toBeUndefined();
+  });
+
+  it("returns undefined when no formula is present (non-AMEX statement)", () => {
+    expect(extractStatementSummary("楽天カード 2026/06/12 スーパー 1,200")).toBeUndefined();
   });
 });
 

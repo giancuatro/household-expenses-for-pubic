@@ -21,7 +21,7 @@ import { yen, formatJaDate, todayIso, formatJaMonth, addMonths, monthKey } from 
 import { buildCategoryColorMap, buildKindColorMap, type CategoryColors } from "@/lib/categoryColors";
 import { buildUserColorMap, userColor, type UserColor } from "@/lib/userColors";
 import { computeBreakdown } from "@/lib/balance";
-import { buildCashFlowProjection } from "@/lib/cashFlow";
+import { buildCashFlowProjection, type ConfirmedBill } from "@/lib/cashFlow";
 import {
   upsertTransaction,
   deleteTransaction,
@@ -62,6 +62,7 @@ type Props = {
   windowTransactions: TransactionRow[];
   fixedCostMasters: FixedCostMasterRow[];
   paymentMethods: PaymentMethodRow[];
+  confirmedBills: ConfirmedBill[];
   cashSnapshots: CashBalanceSnapshotRow[];
   kindColors: KindColorRow[];
   /** Phase 7: active trip pins (currency, est_rate) for travel-mode entry. NULL = JPY-only. */
@@ -128,6 +129,7 @@ export default function HomeClient({
   windowTransactions,
   fixedCostMasters,
   paymentMethods,
+  confirmedBills,
   cashSnapshots,
   kindColors,
   activeTrip,
@@ -398,12 +400,13 @@ export default function HomeClient({
       transactions: windowTransactions,
       paymentMethods,
       fixedCostMasters,
+      confirmedBills,
       endDate: target,
     });
     const day = proj.days.find((d) => d.date === target);
     const balance = day ? day.balance : proj.anchor?.balance ?? null;
     return { date: target, balance, dayOfMonth: targetDay };
-  }, [cashSnapshots, windowTransactions, paymentMethods, fixedCostMasters]);
+  }, [cashSnapshots, windowTransactions, paymentMethods, fixedCostMasters, confirmedBills]);
 
   /* ----- Previous-month summary (for delta indicators) ----- */
   const prevSummary = useMemo(() => {

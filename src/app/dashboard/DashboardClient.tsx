@@ -29,6 +29,7 @@ import type {
   UserRow,
 } from "@/lib/types";
 import type { MonthlyRollupRow } from "@/lib/queries";
+import type { ConfirmedBill } from "@/lib/cashFlow";
 import { yen, monthKey, addMonths, yAxisUnit, makeTickFormatter } from "@/lib/format";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { buildCategoryColorMap, CATEGORY_PALETTE } from "@/lib/categoryColors";
@@ -84,6 +85,7 @@ export default function DashboardClient({
   paymentMethods,
   cashSnapshots,
   fixedCostMasters,
+  confirmedBills,
   holdings,
   trades,
   initialPrices,
@@ -98,6 +100,7 @@ export default function DashboardClient({
   paymentMethods: PaymentMethodRow[];
   cashSnapshots: CashBalanceSnapshotRow[];
   fixedCostMasters: FixedCostMasterRow[];
+  confirmedBills: ConfirmedBill[];
   holdings: InvestmentHoldingRow[];
   trades: InvestmentTransactionRow[];
   initialPrices?: Record<string, { price: number; priceUnit: number }>;
@@ -234,6 +237,7 @@ export default function DashboardClient({
             transactions={windowTransactions}
             paymentMethods={paymentMethods}
             fixedCostMasters={fixedCostMasters}
+            confirmedBills={confirmedBills}
           />
           {/* Card CF summary */}
           <CardCfSummary

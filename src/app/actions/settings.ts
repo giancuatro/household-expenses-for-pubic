@@ -12,6 +12,7 @@ import {
   listTransactionsSince,
   listPaymentMethods,
   listFixedCostMasters,
+  listConfirmedBills,
   listUsers,
 } from "@/lib/queries";
 import { buildCashFlowProjection, cashFlowWindowStart } from "@/lib/cashFlow";
@@ -576,16 +577,18 @@ async function computePredictedAt(
   const snapshots = await listCashBalanceSnapshots(hid).catch(() => []);
   if (snapshots.length === 0) return { predicted: null, fxPendingCount: 0 };
   const windowStart = cashFlowWindowStart(snapshots, asOf);
-  const [txns, paymentMethods, fixedCostMasters] = await Promise.all([
+  const [txns, paymentMethods, fixedCostMasters, confirmedBills] = await Promise.all([
     listTransactionsSince(hid, windowStart),
     listPaymentMethods(hid).catch(() => []),
     listFixedCostMasters(hid).catch(() => []),
+    listConfirmedBills(hid).catch(() => []),
   ]);
   const proj = buildCashFlowProjection({
     snapshots,
     transactions: txns,
     paymentMethods,
     fixedCostMasters,
+    confirmedBills,
     endDate: asOf,
   });
   const day = proj.days.find((d) => d.date === asOf);
