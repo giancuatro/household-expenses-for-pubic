@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { importCardStatement } from "../actions/reconcile";
+import { rebuildMerchantLearning } from "../actions/merchantLearning";
+import { toast } from "@/lib/toast";
 import type { PaymentMethodRow, UserRow } from "@/lib/types";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -18,6 +20,19 @@ export default function ImportClient({ paymentMethods }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [learning, setLearning] = useState(false);
+
+  async function onRebuildLearning() {
+    setLearning(true);
+    try {
+      const { seeded } = await rebuildMerchantLearning();
+      toast.success(seeded > 0 ? `過去の分類から ${seeded} 件の店を学習しました。` : "学習できる履歴がありませんでした。");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLearning(false);
+    }
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -106,6 +121,18 @@ export default function ImportClient({ paymentMethods }: Props) {
           {busy ? "アップロード中..." : "インポート"}
         </button>
       </form>
+
+      <div className="mt-3 border-t border-border pt-3">
+        <button
+          type="button"
+          className="btn-ghost text-xs"
+          onClick={onRebuildLearning}
+          disabled={learning}
+          title="過去に分類済みのカード明細から、店名→カテゴリの対応をまとめて学習し直します"
+        >
+          {learning ? "学習中..." : "🎓 過去の分類から学習を再構築"}
+        </button>
+      </div>
     </section>
   );
 }
