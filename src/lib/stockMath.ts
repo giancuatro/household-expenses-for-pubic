@@ -35,6 +35,76 @@ export function holdingValueJpy(h: InvestmentHoldingRow, live?: LivePriceLike): 
   return Math.round((h.quantity * price) / priceUnit * h.exchange_rate);
 }
 
+export interface TradeLike {
+  ticker: string;
+  name?: string | null;
+  action: "buy" | "sell";
+  quantity: number;
+  price_usd: number;
+  exchange_rate: number;
+}
+
+export interface ReducedPosition {
+  ticker: string;
+  name: string;
+  /** Net shares/units still held (never negative). */
+  qty: number;
+  /** Weighted-average cost in the trade's native price unit. */
+  avgCostUsd: number;
+  /** Exchange rate of the most recent trade for this ticker. */
+  rate: number;
+}
+
+/**
+ * Replay one account's trades into current positions. Buys add to quantity and
+ * cost; sells reduce both proportionally. `trades` MUST be pre-sorted oldest-
+ * first (the DB query orders by date) — average cost is path-dependent.
+ *
+ * A sell that exceeds the running position is the signature of the phantom-
+ * holding bug: the shares were bought in a *different* account, so this account
+ * can't cover the sell. We clamp quantity to zero (as before) but also emit a
+ * warning instead of swallowing it silently — that silent clamp is exactly how
+ * a sell filed against the wrong account left the buy side stranded as a ghost
+ * position. Positions that net to zero are dropped from the result.
+ */
+export function reduceHoldingsFromTrades(trades: TradeLike[]): {
+  positions: ReducedPosition[];
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  const map = new Map<string, { name: string; qty: number; totalCost: number; rate: number }>();
+  for (const t of trades) {
+    const prev = map.get(t.ticker) ?? { name: t.name ?? t.ticker, qty: 0, totalCost: 0, rate: t.exchange_rate };
+    if (t.action === "buy") {
+      prev.totalCost += t.quantity * t.price_usd;
+      prev.qty += t.quantity;
+    } else {
+      if (t.quantity > prev.qty + 1e-9) {
+        warnings.push(
+          `${prev.name}: この口座の保有(${prev.qty})を超える売却(${t.quantity})があります。買付が別口座にないか確認してください。`,
+        );
+      }
+      const newQty = Math.max(0, prev.qty - t.quantity);
+      if (prev.qty > 0) prev.totalCost = prev.totalCost * (newQty / prev.qty);
+      prev.qty = newQty;
+    }
+    prev.rate = t.exchange_rate;
+    map.set(t.ticker, prev);
+  }
+  const positions: ReducedPosition[] = [];
+  for (const [ticker, pos] of map.entries()) {
+    if (pos.qty <= 1e-9) continue;
+    positions.push({
+      ticker,
+      name: pos.name,
+      qty: pos.qty,
+      avgCostUsd: pos.qty > 0 ? pos.totalCost / pos.qty : 0,
+      rate: pos.rate,
+    });
+  }
+  return { positions, warnings };
+}
+
 /**
  * Sum live values per ticker across (account, ticker) pairs. Useful for
  * chart layers that need a per-ticker breakdown rather than a grand total.
