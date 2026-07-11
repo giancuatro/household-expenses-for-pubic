@@ -7,6 +7,7 @@ import { requireSession } from "@/lib/auth";
 import { listTransactionsForMonth } from "@/lib/queries";
 import { addMonths, monthKey, todayIso } from "@/lib/format";
 import { computeFxAmount } from "@/lib/fx";
+import { learnMerchantAlias } from "@/lib/reconcile/merchantAlias";
 import type { TxnKind, TransactionRow } from "@/lib/types";
 
 function ymOf(dateIso: string): string {
@@ -84,7 +85,7 @@ export async function upsertTransaction(input: z.infer<typeof TxnSchema>) {
   if (parsed.id) {
     const { data: prev } = await sb
       .from("transactions")
-      .select("date")
+      .select("date, source_ref")
       .eq("household_id", hid)
       .eq("id", parsed.id)
       .single();
@@ -95,6 +96,19 @@ export async function upsertTransaction(input: z.infer<typeof TxnSchema>) {
       .eq("household_id", hid)
       .eq("id", parsed.id);
     if (error) throw new Error(error.message);
+
+    // Re-learn when the user recategorizes a card-import row: their correction
+    // is the new ground truth for this merchant on the next import. source_ref
+    // survives edits (it's not in the update patch), so it stays a reliable
+    // card-import signal even after `source` flips to "manual".
+    const srcRef = (prev as { source_ref?: string | null } | null)?.source_ref ?? null;
+    if (srcRef?.startsWith("card:") && parsed.note) {
+      await learnMerchantAlias(sb, hid, parsed.note, {
+        user_id: parsed.user_id,
+        category_type: parsed.category_type as TxnKind,
+        category_id: parsed.category_id ?? null,
+      });
+    }
   } else {
     const { error } = await sb.from("transactions").insert(row);
     if (error) throw new Error(error.message);
